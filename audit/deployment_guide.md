@@ -1,8 +1,8 @@
-# Think Token Staking: Deployment Guide
+# Token Staking: Deployment Guide
 
 ## Overview
 
-This guide covers the technical setup, testing, and deployment of the Think Token Staking system. This documentation is intended for developers and system administrators.
+This guide covers the technical setup, testing, and deployment of the THINK Token Staking system. This documentation is intended for developers and system administrators.
 
 ## Development Setup
 
@@ -48,24 +48,34 @@ export RPC_URL=https://sepolia.infura.io/v3/**********
 export DEPLOYER_PK=0x42aa06dc8c320e0255df8d95494f6a7b66e10fa30919a24ad910a6c2bdbcc8ee
 export ADMIN=0xeb24a849E6C908D4166D34D7E3133B452CB627D2
 export MANAGER=0x1Fb0E85b7Ba55F0384d0E06D81DF915aeb3baca3
-export MULTISIG=0xeb24a849E6C908D4166D34D7E3133B452CB627D2
-export TOKEN=0x6e0b07E7A1B550D83E2f11C98Cf1E15fe2b8d47B  # THINK token or other ERC20
+export MULTISIG=0x... # Address for the separate, secure multisig wallet (granted separately after deployment)
+export TOKEN=0x....
+export REWARD_TOKEN=0x... # Reward token address (can be same as staking token)
 export ETHERSCAN_API_KEY=
 ```
 
+### Deployment Order
+
+**IMPORTANT**: The complete system requires deploying components in this specific order:
+
+1. **Core Staking System** (StakingStorage + StakingVault)
+2. **Reward System** (StrategiesRegistry, EpochManager, GrantedRewardStorage, RewardManager)
+3. **Strategy Implementations** (LinearAPRStrategy, EpochPoolStrategy)
+4. **Integration Setup** (Role grants, strategy registrations)
+
 ### Method 1: Using Deployment Scripts (Recommended)
 
-#### Option A: Deploy with existing token
+#### Option A: Deploy Complete System with Existing Token
 
 ```sh
-forge script scripts/DeployWithExistingToken.s.sol:DeployWithExistingToken \
+forge script scripts/DeployCompleteSystem.s.sol:DeployCompleteSystem \
   --rpc-url $RPC_URL \
   --private-key $DEPLOYER_PK \
   --broadcast \
   --verify
 ```
 
-#### Option B: Deploy with new token
+#### Option B: Deploy Core Staking Only (Legacy)
 
 ```sh
 forge script scripts/DeployStaking.s.sol:DeployStaking \
@@ -105,7 +115,7 @@ forge verify-contract $STAKING_STORAGE \
 ```sh
 forge create --broadcast ./src/StakingVault.sol:StakingVault --rpc-url $RPC_URL \
   --private-key $DEPLOYER_PK \
-  --constructor-args $TOKEN $STAKING_STORAGE $ADMIN $MANAGER $MULTISIG
+  --constructor-args $TOKEN $STAKING_STORAGE $ADMIN $MANAGER
 ```
 
 Set the vault address: `export STAKING_VAULT=0x....`
@@ -120,7 +130,7 @@ forge verify-contract $STAKING_VAULT \
   --num-of-optimizations 200 \
   --watch \
   --etherscan-api-key $ETHERSCAN_API_KEY \
-  --constructor-args $(cast abi-encode "constructor(address,address,address,address,address)" $TOKEN $STAKING_STORAGE $ADMIN $MANAGER $MULTISIG)
+  --constructor-args $(cast abi-encode "constructor(address,address,address,address)" $TOKEN $STAKING_STORAGE $ADMIN $MANAGER)
 ```
 
 #### Setup Roles
@@ -133,10 +143,18 @@ cast send $STAKING_STORAGE "grantRole(bytes32,address)" \
   --rpc-url $RPC_URL --private-key $DEPLOYER_PK
 ```
 
-Grant [claiming contract](https://sepolia.etherscan.io/address/0xb14d3494101df6d17f7fd93548224a3fdb87c7b8#readContract) role (if needed):
+Grant MULTISIG_ROLE to secure multisig wallet:
 
 ```bash
-export CLAIMING=0xb14d3494101df6d17f7fd93548224a3fdb87c7b8
+cast send $STAKING_VAULT "grantRole(bytes32,address)" \
+  0xa5a0b70b385ff7611cd3840916bd08b10829e5bf9e6637cf79dd9a427fc0e2ab $MULTISIG \
+  --rpc-url $RPC_URL --private-key $DEPLOYER_PK
+```
+
+Grant claiming contract role (if needed):
+
+```bash
+export CLAIMING=0x0b9f301DB9cDA7C8B736927eF3E745De12b81581
 cast send $STAKING_VAULT "grantRole(bytes32,address)" \
   0x7b86e74b5b2cbeb359a5556f7b8aa26ec9fb74773c1c7b2dc16e82d368c70627 $CLAIMING \
   --rpc-url $RPC_URL --private-key $DEPLOYER_PK
@@ -167,22 +185,6 @@ cast send $STAKING_VAULT "stake(uint128,uint16)" 1000000000000000000 30 \
   --rpc-url $RPC_URL --private-key $DEPLOYER_PK
 ```
 
-## Deployed Contracts
-
-### Sepolia Testnet
-
-**Core Staking System:**
-
-- [StakingVault](https://sepolia.etherscan.io/address/0x5B9801ab239F07B75BffACF7e82DB05D01a1D763/#code)
-- [StakingStorage](https://sepolia.etherscan.io/address/0x6A1ECdc267e80346F7526Fa320b7a0c147093a17/#code)
-
-**Related Contracts:**
-
-- [Claiming Contract](https://sepolia.etherscan.io/address/0x0b9f301DB9cDA7C8B736927eF3E745De12b81581/#code)
-- [THINK Token](https://sepolia.etherscan.io/address/0x6e0b07E7A1B550D83E2f11C98Cf1E15fe2b8d47B#code)
-- [Swapper](https://sepolia.etherscan.io/address/0xcc8c29eeaeab964587becb89e854006399b57ffa#code)
-- [ASTO Token](https://sepolia.etherscan.io/address/0xAFd24e5B967148a3e83Cc51b20f31ef507315B29#code)
-
 ## Available Deployment Scripts
 
 ### 1. DeployStaking.s.sol
@@ -193,7 +195,7 @@ cast send $STAKING_VAULT "stake(uint128,uint16)" 1000000000000000000 30 \
 
 ### 2. DeployWithExistingToken.s.sol
 
-- Uses existing token (like THINK)
+- Uses existing token (like USDC)
 - Reads configuration from environment variables
 - Provides verification commands
 - Automatically sets up all roles, including the `MULTISIG_ROLE`

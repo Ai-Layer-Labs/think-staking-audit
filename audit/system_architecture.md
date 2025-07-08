@@ -1,8 +1,8 @@
-# Think Token Staking System: System Architecture
+# THINK Token Staking System: System Architecture
 
 ## Project Intention
 
-We've developed the Think Token Staking system to enable users to stake their THINK tokens with flexible time locks and earn rewards. The primary goal is to provide a secure, efficient staking mechanism with comprehensive tracking capabilities and integration with external claiming systems.
+We've developed the Token Staking system to enable users to stake their tokens with flexible time locks and earn rewards. The primary goal is to provide a secure, efficient staking mechanism with comprehensive tracking capabilities and integration with external claiming systems.
 
 ## Key Design Decisions
 
@@ -53,7 +53,7 @@ struct Stake {
     uint16 stakeDay;     // 2 bytes - day when stake was created
     uint16 unstakeDay;   // 2 bytes - day when stake was unstaked (0 if active)
     uint16 daysLock;     // 2 bytes - lock period in days
-    bool isFromClaim;    // 1 byte - whether stake originated from claim contract
+    uint16 flags;        // bits encoded flags
 }
 ```
 
@@ -133,7 +133,7 @@ We'd particularly appreciate audit review of:
 1. **Admin Multisig**: Trusted with role management and system configuration
 2. **Manager Address**: Trusted with operational functions and emergency controls
 3. **Treasury Multisig**: Trusted with emergency withdrawals
-4. **THINK Token Contract**: Trusted ERC20 implementation
+4. **Token Contract**: Trusted ERC20 implementation
 5. **External Claiming Contract**: Trusted integration for stake-from-claim functionality
 
 ### Attack Vectors Considered
@@ -151,7 +151,7 @@ We'd particularly appreciate audit review of:
 
 External claiming contracts must:
 
-1. **Transfer tokens first**: Transfer THINK tokens to StakingVault before calling `stakeFromClaim`
+1. **Transfer tokens first**: Transfer tokens to StakingVault before calling `stakeFromClaim`
 2. **Have CLAIM_CONTRACT_ROLE**: Must be granted the claim contract role
 3. **Provide valid parameters**: Staker address, amount, and time lock
 
@@ -214,18 +214,11 @@ These contracts are **not upgradeable** by design for security reasons. Any chan
 
 ## Code Quality Metrics
 
-### Contract Size and Complexity
-
-- **StakingVault**: ~210 lines, 6 public/external functions
-- **StakingStorage**: ~325 lines, 12 public/external functions
-- **State Variables**: Custom mappings and checkpoint system for comprehensive tracking
-- **External Dependencies**: OpenZeppelin contracts (AccessControl, Pausable, ReentrancyGuard, SafeERC20)
-
 ### Test Coverage Expectations
 
 - **Function Coverage**: 100% of public functions
 - **Branch Coverage**: 100% of conditional logic
-- **Edge Cases**: All error conditions and boundary cases tested
+- **Edge Cases**: We are not going to test edge cases that makes no sense, like locking tokens for maximum possible by `uint16` 179 years.
 - **Integration Tests**: Full vault-bookkeeper integration
 - **Historical Data Tests**: Checkpoint functionality verification
 - **Batch Operation Tests**: Multi-stake/unstake scenarios

@@ -1,8 +1,8 @@
-# Think Token Staking System
+# THINK Token Staking System
 
-A secure, flexible staking platform for THINK tokens with time-locked commitments and comprehensive reward mechanisms.
+A secure, flexible staking platform for tokens with time-locked commitments and comprehensive reward mechanisms.
 
-![Think Staking System Architecture](docs/architecture.png)
+![Token Staking & Reward System Architecture](docs/architecture.png)
 
 ## Getting Started
 
@@ -31,8 +31,8 @@ This staking platform is built with three core principles: security, data integr
 
 ### Sepolia Testnet
 
-- **StakingVault**: [`0x9EBCF71E36aEBA0553Af9058a0F738218a0EAFcd`](https://sepolia.etherscan.io/address/0x9EBCF71E36aEBA0553Af9058a0F738218a0EAFcd/#code)
-- **StakingStorage**: [`0x2b7d0c52622fA7A2cF045578eACBEECaCa130b4f`](https://sepolia.etherscan.io/address/0x2b7d0c52622fA7A2cF045578eACBEECaCa130b4f/#code)
+- **StakingVault**: [`0x5B9801ab239F07B75BffACF7e82DB05D01a1D763`](https://sepolia.etherscan.io/address/0x5B9801ab239F07B75BffACF7e82DB05D01a1D763/#code)
+- **StakingStorage**: [`0x6A1ECdc267e80346F7526Fa320b7a0c147093a17`](https://sepolia.etherscan.io/address/0x6A1ECdc267e80346F7526Fa320b7a0c147093a17/#code)
 
 ### Project Status
 
@@ -57,7 +57,6 @@ For a detailed breakdown of all documentation, see the tables below.
 | [Architecture Overview](docs/architecture_overview.md)     | System design and architecture overview |
 | [Contract Specifications](docs/contract_specifications.md) | Detailed technical specifications       |
 | [Audit Dossier](audit/README.md)                           | All security-related documentation      |
-| [Gas report](audit/gas_report.md)                          | Current gas report                      |
 
 ## 🛠️ Technology Stack
 
@@ -67,13 +66,7 @@ For a detailed breakdown of all documentation, see the tables below.
 
 ---
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE.md) file for details.
-
-## 🔗 Links
-
-- **External Requirements**: [Notion Requirements Doc](https://www.notion.so/futureverse/Claim-and-Staking-requirements-1d20cb4dab3d80a297b1e4364e4b25b3)
-- **THINK Token**: [Sepolia Contract](https://sepolia.etherscan.io/address/0x6e0b07E7A1B550D83E2f11C98Cf1E15fe2b8d47B#code)
-- **Related Systems**: [Claiming Contract](https://sepolia.etherscan.io/address/0x0b9f301DB9cDA7C8B736927eF3E745De12b81581/#code)
+# This project is licensed under the MIT License - see the [LICENSE](LICENSE.md) file for details.
 
 ---
 

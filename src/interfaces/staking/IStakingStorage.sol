@@ -7,16 +7,22 @@ pragma solidity ^0.8.30;
  * @notice Unified interface for consolidated staking storage
  */
 interface IStakingStorage {
+    enum Sign {
+        POSITIVE,
+        NEGATIVE
+    }
     struct Stake {
         uint128 amount;
         uint16 stakeDay;
         uint16 unstakeDay;
         uint16 daysLock;
-        bool isFromClaim;
+        uint16 flags; // 2 bytes - pack multiple booleans
     }
 
     struct StakerInfo {
         uint128 totalStaked;
+        uint128 totalRewarded;
+        uint128 totalClaimed;
         uint16 stakesCounter;
         uint16 activeStakesNumber;
         uint16 lastCheckpointDay;
@@ -34,7 +40,7 @@ interface IStakingStorage {
         uint128 amount,
         uint16 indexed stakeDay,
         uint16 daysLock,
-        bool isFromClaim
+        uint16 flags
     );
 
     event Unstaked(
@@ -54,23 +60,16 @@ interface IStakingStorage {
     // Stake Management
     function createStake(
         address staker,
-        bytes32 stakeId,
         uint128 amount,
         uint16 daysLock,
-        bool isFromClaim
-    ) external;
+        uint16 flags
+    ) external returns (bytes32 stakeId);
 
     function removeStake(address staker, bytes32 stakeId) external;
 
-    function getStake(
-        address staker,
-        bytes32 stakeId
-    ) external view returns (Stake memory);
+    function getStake(bytes32 stakeId) external view returns (Stake memory);
 
-    function isActiveStake(
-        address staker,
-        bytes32 stakeId
-    ) external view returns (bool);
+    function isActiveStake(bytes32 stakeId) external view returns (bool);
 
     // Staker Management
     function getStakerInfo(
@@ -89,35 +88,6 @@ interface IStakingStorage {
         uint16 targetDay
     ) external view returns (uint128[] memory);
 
-    // Temporal Query Functions
-    function getStakesExceedingDuration(
-        address staker,
-        uint16 minDays
-    ) external view returns (bytes32[] memory);
-
-    function getStakesByDurationRange(
-        address staker,
-        uint16 minDays,
-        uint16 maxDays
-    ) external view returns (bytes32[] memory);
-
-    function getActiveStakesOnDay(
-        address staker,
-        uint16 targetDay
-    ) external view returns (bytes32[] memory);
-
-    function getStakesByDurationOnDay(
-        address staker,
-        uint16 targetDay,
-        uint16 minDuration,
-        bool includeGreater
-    ) external view returns (bytes32[] memory);
-
-    function batchGetStakeInfo(
-        address staker,
-        bytes32[] calldata stakeIds
-    ) external view returns (Stake[] memory);
-
     // Global Statistics
     function getDailySnapshot(
         uint16 day
@@ -132,4 +102,8 @@ interface IStakingStorage {
     ) external view returns (address[] memory);
 
     function getTotalStakersCount() external view returns (uint256);
+
+    function getStakerStakeIds(
+        address staker
+    ) external view returns (bytes32[] memory);
 }

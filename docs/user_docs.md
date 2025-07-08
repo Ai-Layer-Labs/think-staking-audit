@@ -1,15 +1,15 @@
-# Think Token Staking: User Guide
+# Token Staking: User Guide
 
-## What is Think Token Staking?
+## What is Token Staking?
 
-Think Token Staking is a decentralized application (dApp) that allows you to "stake" your THINK tokens to help secure the network and earn rewards. Think of staking like putting your money in a savings account - you lock up your tokens for a period of time and get rewarded for doing so.
+Token Staking is a decentralized application (dApp) that allows you to "stake" your tokens to help secure the network and earn rewards. Think of staking like putting your money in a savings account - you lock up your tokens for a period of time and get rewarded for doing so.
 
 ## Why Should You Stake?
 
 ### Benefits of Staking
 
-- **Earn Rewards**: Get additional THINK tokens as rewards for staking
-- **Support the Network**: Help secure and maintain the Think ecosystem
+- **Earn Rewards**: Get additional tokens as rewards for staking
+- **Support the Network**: Help secure and maintain the token ecosystem
 - **Flexible Terms**: Choose your own lock-up periods based on your preferences
 - **Compound Growth**: Stake your rewards to earn even more
 
@@ -24,7 +24,7 @@ Think Token Staking is a decentralized application (dApp) that allows you to "st
 
 ### The Basic Process
 
-1. **Approve Tokens**: Give permission for the staking contract to use your THINK tokens
+1. **Approve Tokens**: Give permission for the staking contract to use your staking tokens
 2. **Choose Lock Period**: Decide how long you want to lock your tokens (can be zero for no lock)
 3. **Stake Your Tokens**: Send your tokens to the staking contract
 4. **Wait**: Your tokens are locked for the chosen period
@@ -128,7 +128,7 @@ We separated these functions because:
 
 ### What You Need
 
-1. **THINK Tokens**: The tokens you want to stake
+1. **Staking Tokens**: The tokens you want to stake
 2. **Crypto Wallet**: Like MetaMask, to interact with the blockchain
 3. **Small Amount of ETH**: To pay for transaction fees (gas)
 4. **Basic Understanding**: Of how long you want to lock your tokens
@@ -136,7 +136,7 @@ We separated these functions because:
 ### Step-by-Step Process
 
 1. **Connect Your Wallet** to the staking interface
-2. **Check Your Balance** to see how many THINK tokens you have
+2. **Check Your Balance** to see how many staking tokens you have
 3. **Approve Tokens** by confirming a transaction that lets the contract use your tokens
 4. **Choose Stake Amount** - how many tokens you want to stake
 5. **Select Time Lock** - how long you want to lock them (or choose no lock)
