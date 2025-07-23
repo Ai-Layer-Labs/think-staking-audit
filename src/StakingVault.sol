@@ -10,9 +10,9 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import "./interfaces/staking/IStakingStorage.sol";
 import "./interfaces/staking/StakingErrors.sol";
-import {Flags} from "./lib/Flags.sol";
-import {StakingFlags} from "./StakingFlags.sol";
-import {StakingFlags} from "./StakingFlags.sol";
+import "./lib/Flags.sol";
+import "./StakingFlags.sol";
+import "./StakingFlags.sol";
 
 uint16 constant EMPTY_FLAGS = 0;
 
@@ -28,7 +28,6 @@ contract StakingVault is
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
     bytes32 public constant CLAIM_CONTRACT_ROLE =
         keccak256("CLAIM_CONTRACT_ROLE");
-    bytes32 public constant CONTROLLER_ROLE = keccak256("CONTROLLER_ROLE");
     bytes32 public constant MULTISIG_ROLE = keccak256("MULTISIG_ROLE");
 
     // Immutable references
@@ -41,7 +40,8 @@ contract StakingVault is
         bytes32 stakeId,
         uint128 amount,
         uint16 indexed stakeDay,
-        uint16 indexed daysLock
+        uint16 indexed daysLock,
+        uint16 flags
     );
 
     event Unstaked(
@@ -56,13 +56,12 @@ contract StakingVault is
     constructor(
         IERC20 _token,
         address _storage,
-        address _admin,
+        address _multisig,
         address _manager
     ) {
-        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        _grantRole(DEFAULT_ADMIN_ROLE, _multisig);
         _grantRole(MANAGER_ROLE, _manager);
-        _grantRole(CONTROLLER_ROLE, _admin);
-        _grantRole(MULTISIG_ROLE, _admin);
+        _grantRole(MULTISIG_ROLE, _multisig);
 
         token = _token;
         stakingStorage = IStakingStorage(_storage);
@@ -97,14 +96,21 @@ contract StakingVault is
             EMPTY_FLAGS
         );
 
-        emit Staked(staker, stakeId, amount, _getCurrentDay(), daysLock);
+        emit Staked(
+            staker,
+            stakeId,
+            amount,
+            _getCurrentDay(),
+            daysLock,
+            EMPTY_FLAGS
+        );
     }
 
     /**
      * @notice Unstake matured tokens
      * @param stakeId ID of the stake to unstake
      */
-    function unstake(bytes32 stakeId) external whenNotPaused nonReentrant {
+    function unstake(bytes32 stakeId) public whenNotPaused nonReentrant {
         address caller = msg.sender;
 
         // Get stake from storage
@@ -118,7 +124,7 @@ contract StakingVault is
         uint16 currentDay = _getCurrentDay();
         uint16 matureDay = _stake.stakeDay + _stake.daysLock;
         require(
-            currentDay > matureDay,
+            currentDay >= matureDay,
             StakeNotMatured(stakeId, currentDay, matureDay)
         );
 
@@ -129,6 +135,16 @@ contract StakingVault is
         token.safeTransfer(caller, _stake.amount);
 
         emit Unstaked(caller, stakeId, currentDay, _stake.amount);
+    }
+
+    /**
+     * @notice Unstake multiple matured tokens in a single transaction.
+     * @param stakeIds An array of stake IDs to unstake.
+     */
+    function batchUnstake(bytes32[] calldata stakeIds) external {
+        for (uint256 i = 0; i < stakeIds.length; i++) {
+            unstake(stakeIds[i]);
+        }
     }
 
     /**
@@ -157,7 +173,7 @@ contract StakingVault is
         // Create stake in storage and get the generated ID
         stakeId = stakingStorage.createStake(staker, amount, daysLock, flags);
 
-        emit Staked(staker, stakeId, amount, _getCurrentDay(), daysLock);
+        emit Staked(staker, stakeId, amount, _getCurrentDay(), daysLock, flags);
     }
 
     // ═══════════════════════════════════════════════════════════════════

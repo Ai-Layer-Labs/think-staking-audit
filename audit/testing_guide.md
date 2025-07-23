@@ -33,7 +33,7 @@ Actual Coverage (test_coverage.md - forge generated)
 
 ```bash
 # Generate function list per contract
-forge inspect GrantedRewardStorage methods > functions.json
+forge inspect RewardBookkeeper methods > functions.json
 # Parse public/external functions only
 ```
 
@@ -69,7 +69,7 @@ For each unmapped function, create specific test case:
 
 **Actor**: System (CONTROLLER_ROLE)
 **Description**: Validate reward granting functionality
-**Contract**: GrantedRewardStorage
+**Contract**: RewardBookkeeper
 
 **Test Scenarios**:
 
@@ -84,7 +84,7 @@ For each unmapped function, create specific test case:
 Map new test cases to functions:
 
 ```markdown
-| GrantedRewardStorage | `grantReward()` | TC_R16, TC_GRS01 |
+| RewardBookkeeper | `grantReward()` | TC_R16, TC_GRS01 |
 ```
 
 #### Step 3: Implement Tests
@@ -127,18 +127,18 @@ forge coverage --no-match-coverage "tests/helpers/"
 #### Level 2: Test Cases to Functions
 
 ```markdown
-| Test Case | Contract             | Functions                           |
-| --------- | -------------------- | ----------------------------------- |
-| TC_GRS01  | GrantedRewardStorage | `grantReward()`, `getUserRewards()` |
+| Test Case | Contract         | Functions                           |
+| --------- | ---------------- | ----------------------------------- |
+| TC_GRS01  | RewardBookkeeper | `grantReward()`, `getUserRewards()` |
 ```
 
 #### Level 3: Functions to Test Cases
 
 ```markdown
-| Contract             | Function                   | Test Cases       |
-| -------------------- | -------------------------- | ---------------- |
-| GrantedRewardStorage | `grantReward()`            | TC_R16, TC_GRS01 |
-| GrantedRewardStorage | `getUserClaimableAmount()` | (none)           |
+| Contract         | Function                   | Test Cases       |
+| ---------------- | -------------------------- | ---------------- |
+| RewardBookkeeper | `grantReward()`            | TC_R16, TC_GRS01 |
+| RewardBookkeeper | `getUserClaimableAmount()` | (none)           |
 ```
 
 ### Gap Detection Rules
@@ -171,7 +171,7 @@ AI Task: "Identify use cases that don't map to any test cases"
 ### DON'T: Make Coverage Claims
 
 ```
-❌ "GrantedRewardStorage has 100% coverage"
+❌ "RewardBookkeeper has 100% coverage"
 ❌ "All security tests are complete"
 ❌ "System is audit-ready"
 ```
@@ -209,13 +209,13 @@ AI Task: "Identify use cases that don't map to any test cases"
 ### Critical Contracts (Security-Sensitive)
 
 - **Target**: >95% line coverage, >90% branch coverage
-- **Contracts**: StakingVault, RewardManager, GrantedRewardStorage
+- **Contracts**: StakingVault, RewardManager, RewardBookkeeper
 - **Priority**: All public functions must have direct unit tests
 
 ### Support Contracts (Lower Risk)
 
 - **Target**: >85% line coverage, >80% branch coverage
-- **Contracts**: EpochManager, StrategiesRegistry
+- **Contracts**: PoolManager, StrategiesRegistry
 - **Priority**: Integration tests acceptable for some functions
 
 ### Library Contracts (Pure Logic)
@@ -252,7 +252,7 @@ forge coverage --report lcov
 forge coverage --no-match-coverage "tests/helpers/" > audit/test_coverage.md
 
 # Check specific contract coverage
-forge coverage --match-contract GrantedRewardStorage
+forge coverage --match-contract RewardBookkeeper
 ```
 
 ### Function Extraction
@@ -269,22 +269,22 @@ cast interface path/to/Contract.sol
 
 ```bash
 # Run specific test file
-forge test --match-path tests/unit/GrantedRewardStorage.t.sol
+forge test --match-path tests/unit/RewardBookkeeper.t.sol
 
 # Run tests for specific contract
-forge test --match-contract GrantedRewardStorageTest
+forge test --match-contract RewardBookkeeperTest
 
 # Run with gas reporting
 forge test --gas-report
 ```
 
-## Example Workflow: Adding GrantedRewardStorage Tests
+## Example Workflow: Adding RewardBookkeeper Tests
 
 ### Step 1: Identify Gap
 
 ```
-Matrix shows: GrantedRewardStorage.getUserClaimableAmount() → (none)
-Forge shows: GrantedRewardStorage 67% coverage
+Matrix shows: RewardBookkeeper.getUserClaimableAmount() → (none)
+Forge shows: RewardBookkeeper 67% coverage
 Gap: Need test for getUserClaimableAmount()
 ```
 
@@ -306,17 +306,17 @@ Add to `test_cases.md`:
 Update `test_coverage_matrix.md`:
 
 ```markdown
-| GrantedRewardStorage | `getUserClaimableAmount()` | TC_GRS05 |
+| RewardBookkeeper | `getUserClaimableAmount()` | TC_GRS05 |
 ```
 
 ### Step 4: Implement Test
 
-Create `tests/unit/GrantedRewardStorage.t.sol` with TC_GRS05 implementation.
+Create `tests/unit/RewardBookkeeper.t.sol` with TC_GRS05 implementation.
 
 ### Step 5: Validate
 
 ```bash
-forge coverage --match-contract GrantedRewardStorage
+forge coverage --match-contract RewardBookkeeper
 # Verify coverage improved from 67% to higher percentage
 ```
 

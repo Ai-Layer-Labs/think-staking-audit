@@ -7,6 +7,8 @@ import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "./interfaces/staking/IStakingStorage.sol";
 import "./interfaces/staking/StakingErrors.sol";
 
+import "forge-std/console.sol";
+
 /**
  * @title StakingStorage
  * @notice Storage for staking data
@@ -16,6 +18,8 @@ contract StakingStorage is IStakingStorage, AccessControl, StakingErrors {
 
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
     bytes32 public constant CONTROLLER_ROLE = keccak256("CONTROLLER_ROLE");
+
+    bool private _controllerInitialized;
 
     // Core storage mappings
     mapping(address staker => mapping(uint16 day => bytes32[])) public IDs;
@@ -31,11 +35,18 @@ contract StakingStorage is IStakingStorage, AccessControl, StakingErrors {
     uint128 private _currentTotalStaked;
     uint16 private _currentDay;
 
-    constructor(address admin, address manager, address vault) {
+    constructor(address admin, address manager) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(MANAGER_ROLE, manager);
-        _grantRole(CONTROLLER_ROLE, vault); // StakingVault
         _currentDay = _getCurrentDay();
+    }
+
+    function initController(
+        address _controller
+    ) external onlyRole(MANAGER_ROLE) {
+        require(!_controllerInitialized, StakingErrors.ControllerAlreadySet());
+        _controllerInitialized = true;
+        _grantRole(CONTROLLER_ROLE, _controller);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -284,7 +295,7 @@ contract StakingStorage is IStakingStorage, AccessControl, StakingErrors {
         DailySnapshot storage snapshot = _dailySnapshots[day];
 
         // ATTN: max uint128 = 2^128 - 1 ≈ 3.4 × 10^38
-        // We assume the token has 18 decimals and its totalSupply is sensible, like 100B.
+        // We know the token has 18 decimals and its totalSupply is 1B only.
         // So, we can safely use unchecked arithmetic operations.
         unchecked {
             if (deltaSign == Sign.POSITIVE) {
@@ -323,25 +334,25 @@ contract StakingStorage is IStakingStorage, AccessControl, StakingErrors {
         // Handle edge case: target is before first checkpoint
         if (checkpoints[0] > targetDay) return 0;
 
-        // Binary search for closest checkpoint
+        // Binary search for the insertion point of targetDay.
+        // This robust implementation correctly handles all edge cases, including when
+        // the targetDay is before the first checkpoint.
         uint256 left = 0;
-        uint256 right = nCheckpoints - 1;
-        uint16 closest = 0;
-
-        while (left <= right) {
+        uint256 right = nCheckpoints;
+        while (left < right) {
             uint256 mid = left + (right - left) / 2;
-            uint16 midDay = checkpoints[mid];
-
-            if (midDay <= targetDay) {
-                closest = midDay;
-                left = mid + 1;
+            if (checkpoints[mid] > targetDay) {
+                right = mid;
             } else {
-                if (mid == 0) break;
-                right = mid - 1;
+                left = mid + 1;
             }
         }
 
-        return _stakerBalances[staker][closest];
+        // If right is 0, it means targetDay is before the first checkpoint.
+        if (right == 0) return 0;
+
+        // The closest checkpoint is the one at the index just before the insertion point.
+        return _stakerBalances[staker][checkpoints[right - 1]];
     }
 
     function _safeSubtract(
