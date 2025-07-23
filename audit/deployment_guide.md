@@ -59,7 +59,7 @@ export ETHERSCAN_API_KEY=
 **IMPORTANT**: The complete system requires deploying components in this specific order:
 
 1. **Core Staking System** (StakingStorage + StakingVault)
-2. **Reward System** (StrategiesRegistry, EpochManager, GrantedRewardStorage, RewardManager)
+2. **Reward System** (StrategiesRegistry, PoolManager, RewardBookkeeper, RewardManager)
 3. **Strategy Implementations** (LinearAPRStrategy, EpochPoolStrategy)
 4. **Integration Setup** (Role grants, strategy registrations)
 
@@ -90,9 +90,11 @@ forge script scripts/DeployStaking.s.sol:DeployStaking \
 #### Deploy StakingStorage
 
 ```sh
-forge create --broadcast ./src/StakingStorage.sol:StakingStorage --rpc-url $RPC_URL \
+forge create ./src/StakingStorage.sol:StakingStorage \
+  --rpc-url $RPC_URL \
   --private-key $DEPLOYER_PK \
-  --constructor-args $ADMIN $MANAGER "0x0000000000000000000000000000000000000000"
+  --broadcast --verify \
+  --constructor-args $ADMIN $MANAGER
 ```
 
 Set the deployed contract address: `export STAKING_STORAGE=0x...`
@@ -113,9 +115,10 @@ forge verify-contract $STAKING_STORAGE \
 #### Deploy StakingVault
 
 ```sh
-forge create --broadcast ./src/StakingVault.sol:StakingVault --rpc-url $RPC_URL \
+forge create ./src/StakingVault.sol:StakingVault --rpc-url $RPC_URL \
   --private-key $DEPLOYER_PK \
-  --constructor-args $TOKEN $STAKING_STORAGE $ADMIN $MANAGER
+  --broadcast --verify \
+  --constructor-args $THINK $STAKING_STORAGE $ADMIN $MANAGER
 ```
 
 Set the vault address: `export STAKING_VAULT=0x....`
@@ -138,8 +141,14 @@ forge verify-contract $STAKING_VAULT \
 Grant CONTROLLER_ROLE to vault in storage contract:
 
 ```bash
+cast send $STAKING_STORAGE "initController(address)" $STAKING_VAULT \
+  --rpc-url $RPC_URL --private-key $DEPLOYER_PK
+
+```
+
+```bash
 cast send $STAKING_STORAGE "grantRole(bytes32,address)" \
-  0x7b765e0e932d348852a6f810bfa1ab891615cb53504089c3e26b8c96ca14c3d5 $STAKING_VAULT \
+  0x7b765e0e932d348852a6f810bfa1ab891e259123f02db8cdcde614c570223357 $STAKING_VAULT \
   --rpc-url $RPC_URL --private-key $DEPLOYER_PK
 ```
 

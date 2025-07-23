@@ -2,28 +2,32 @@
 pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
-import "../interfaces/reward/IBaseRewardStrategy.sol";
-import "../interfaces/reward/RewardEnums.sol";
+import "../interfaces/reward/IRewardStrategy.sol";
+import "../interfaces/reward/IEnums.sol";
+import "../interfaces/reward/RewardErrors.sol";
 
-contract GrantedRewardStorage is AccessControl {
+contract RewardBookkeeper is RewardErrors, AccessControl {
     bytes32 public constant CONTROLLER_ROLE = keccak256("CONTROLLER_ROLE");
+
+    bool private _controllerInitialized;
 
     struct GrantedReward {
         uint128 amount;
         uint32 grantedAt;
-        uint32 epochId;
-        uint16 strategyId;
+        uint32 poolId;
+        uint32 strategyId;
         uint16 strategyVersion;
         bool claimed;
     }
 
-    mapping(address => GrantedReward[]) private _userRewards;
-    mapping(address => uint256) private _nextClaimableIndex;
+    mapping(address user => GrantedReward[]) private _userRewards;
+    mapping(address user => uint256 nextClaimableIndex)
+        private _nextClaimableIndex;
 
     event RewardGranted(
         address indexed user,
         uint256 indexed strategyId,
-        uint32 indexed epochId,
+        uint32 indexed poolId,
         uint256 amount,
         uint16 strategyVersion
     );
@@ -38,10 +42,19 @@ contract GrantedRewardStorage is AccessControl {
         uint256 rewardCount
     );
 
-    error RewardAlreadyClaimed(uint256 rewardIndex);
+    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
 
-    constructor(address admin) {
+    constructor(address admin, address manager) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(MANAGER_ROLE, manager);
+    }
+
+    function initController(
+        address controller
+    ) external onlyRole(MANAGER_ROLE) {
+        require(!_controllerInitialized, ControllerAlreadySet());
+        _controllerInitialized = true;
+        _grantRole(CONTROLLER_ROLE, controller);
     }
 
     function grantReward(
@@ -49,19 +62,19 @@ contract GrantedRewardStorage is AccessControl {
         uint256 strategyId,
         uint16 strategyVersion,
         uint256 amount,
-        uint32 epochId
+        uint32 poolId
     ) external onlyRole(CONTROLLER_ROLE) {
         _userRewards[user].push(
             GrantedReward({
                 amount: uint128(amount),
                 grantedAt: uint32(block.timestamp),
-                epochId: epochId,
+                poolId: poolId,
                 strategyId: uint16(strategyId),
                 strategyVersion: strategyVersion,
                 claimed: false
             })
         );
-        emit RewardGranted(user, strategyId, epochId, amount, strategyVersion);
+        emit RewardGranted(user, strategyId, poolId, amount, strategyVersion);
     }
 
     function markRewardClaimed(
@@ -141,26 +154,26 @@ contract GrantedRewardStorage is AccessControl {
         return (claimableRewards, claimableIndices);
     }
 
-    function getUserEpochRewards(
+    function getUserPoolRewards(
         address user,
-        uint32 epochId
+        uint32 poolId
     ) external view returns (GrantedReward[] memory) {
-        uint256 epochRewardCount = 0;
+        uint256 poolRewardCount = 0;
         for (uint256 i = 0; i < _userRewards[user].length; i++) {
-            if (_userRewards[user][i].epochId == epochId) epochRewardCount++;
+            if (_userRewards[user][i].poolId == poolId) poolRewardCount++;
         }
 
-        GrantedReward[] memory epochRewards = new GrantedReward[](
-            epochRewardCount
+        GrantedReward[] memory poolRewards = new GrantedReward[](
+            poolRewardCount
         );
         uint256 counter = 0;
         for (uint256 i = 0; i < _userRewards[user].length; i++) {
-            if (_userRewards[user][i].epochId == epochId) {
-                epochRewards[counter] = _userRewards[user][i];
+            if (_userRewards[user][i].poolId == poolId) {
+                poolRewards[counter] = _userRewards[user][i];
                 counter++;
             }
         }
-        return epochRewards;
+        return poolRewards;
     }
 
     function getUserRewardsPaginated(
@@ -186,15 +199,15 @@ contract GrantedRewardStorage is AccessControl {
     function updateNextClaimableIndex(
         address user
     ) external onlyRole(CONTROLLER_ROLE) {
-        uint256 totalRewards = _userRewards[user].length;
+        uint256 numberOfRewards = _userRewards[user].length;
         uint256 currentIndex = _nextClaimableIndex[user];
 
-        for (uint256 i = currentIndex; i < totalRewards; i++) {
+        for (uint256 i = currentIndex; i < numberOfRewards; i++) {
             if (!_userRewards[user][i].claimed) {
                 _nextClaimableIndex[user] = i;
                 return;
             }
         }
-        _nextClaimableIndex[user] = totalRewards;
+        _nextClaimableIndex[user] = numberOfRewards;
     }
 }

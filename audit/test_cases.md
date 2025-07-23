@@ -422,636 +422,122 @@ Feature: Time Lock Business Logic
 
 # ═══════════════════════════════════════════════════════════════════════════
 
-## REWARD SYSTEM TESTS (CRITICAL - ZERO COVERAGE)
+## REWARD SYSTEM TESTS
 
 ### TC_R01: Strategy Registration (UC21)
 
 ```gherkin
 Feature: Strategy Registration and Management
   Scenario: Successfully register new reward strategy
-    Given admin has DEFAULT_ADMIN_ROLE
-    And strategy contract implements IBaseRewardStrategy
-    And strategy address is valid contract
-    When admin calls StrategiesRegistry.registerStrategy(strategyAddress)
-    Then strategy should be registered with new strategyId
-    And strategy should be inactive by default
+    Given manager has MANAGER_ROLE
+    And strategy contract implements IRewardStrategy
+    When manager calls StrategiesRegistry.registerStrategy(strategyId, strategyAddress)
+    Then strategy should be registered with the given ID
     And StrategyRegistered event should be emitted
-    And strategy should be queryable by ID
-
-  Scenario: Register strategy with invalid address
-    Given admin attempts to register invalid address
-    When registerStrategy(invalidAddress) is called
-    Then transaction should revert with appropriate error
-    And no strategy should be registered
 ```
 
-### TC_R02: Strategy Status Management (UC21)
+### TC_R02: Pool Lifecycle (UC22)
 
 ```gherkin
-Feature: Strategy Activation and Deactivation
-  Scenario: Activate registered strategy
-    Given strategy is registered but inactive
-    And admin has proper permissions
-    When admin calls setStrategyStatus(strategyId, true)
-    Then strategy should be marked as active
-    And strategy should appear in active strategies list
-    And StrategyStatusChanged event should be emitted
-
-  Scenario: Deactivate active strategy
-    Given strategy is currently active
-    When admin calls setStrategyStatus(strategyId, false)
-    Then strategy should be marked as inactive
-    And strategy should be removed from active list
-    And event should be emitted
-
-  Scenario: Unauthorized strategy status change
-    Given user does not have admin role
-    When user attempts setStrategyStatus
-    Then transaction should revert with access control error
+Feature: Pool Lifecycle Management
+  Scenario: Successfully create and advance a pool
+    Given manager has MANAGER_ROLE
+    When manager calls PoolManager.upsertPool() with valid parameters
+    Then a new pool should be created in the ANNOUNCED state
+    And PoolUpserted and PoolStateChanged events should be emitted
+    When the current day advances past the pool's startDay
+    And updatePoolState() is called
+    Then the pool state should transition to ACTIVE
+    When the current day advances past the pool's endDay
+    And updatePoolState() is called
+    Then the pool state should transition to ENDED
+    When manager calls finalizePool() with the total weight
+    Then the pool state should transition to CALCULATED
+    And the total weight should be stored
 ```
 
-### TC_R03: Strategy Versioning (UC21)
+### TC_R03: Immediate Reward Claim (UC23)
 
 ```gherkin
-Feature: Strategy Version Management
-  Scenario: Update strategy version
-    Given strategy is registered
-    And admin has proper permissions
-    When admin calls updateStrategyVersion(strategyId)
-    Then strategy version should be incremented
-    And StrategyVersionUpdated event should be emitted
-    And version should be queryable
-
-  Scenario: Update version of non-existent strategy
-    Given invalid strategy ID
-    When updateStrategyVersion is called
-    Then transaction should revert with StrategyNotFound error
+Feature: Immediate Reward Claiming
+  Scenario: User claims an immediate reward
+    Given a USER_CLAIMABLE strategy is registered and funded
+    And a user has an active stake
+    When the user calls RewardManager.claimImmediateReward(strategyId, stakeId)
+    Then the reward amount is calculated based on full days staked
+    And the tokens are transferred to the user
+    And the user's lastClaimDay is updated to the current day
+    And an ImmediateRewardClaimed event is emitted
 ```
 
-### TC_R04: Epoch Announcement (UC22)
+### TC_R04: Granted Reward Claim (UC24)
 
 ```gherkin
-Feature: Epoch Lifecycle - Announcement Phase
-  Scenario: Successfully announce new epoch
-    Given admin has proper permissions
-    And epoch parameters are valid (startDay > currentDay)
-    And strategy ID exists and is active
-    When admin calls EpochManager.announceEpoch(startDay, endDay, strategyId, estimatedPool)
-    Then new epoch should be created with ANNOUNCED state
-    And epoch should be added to announced epochs list
-    And epoch ID should be returned
-    And epoch should be queryable
-
-  Scenario: Announce epoch with invalid parameters
-    Given invalid epoch parameters (startDay <= currentDay)
-    When announceEpoch is called
-    Then transaction should revert with appropriate error
-    And no epoch should be created
+Feature: Granted Reward Claiming
+  Scenario: User claims a granted reward
+    Given an ADMIN_GRANTED strategy is registered
+    And an admin has granted a reward to a user in the RewardBookkeeper
+    When the user calls RewardManager.claimGrantedRewards()
+    Then the RewardManager fetches the claimable rewards from the bookkeeper
+    And the total token amount is transferred to the user
+    And the RewardManager instructs the bookkeeper to mark the rewards as claimed
+    And a GrantedRewardsClaimed event is emitted
 ```
 
-### TC_R05: Epoch State Transitions (UC22)
+### TC_R05: Immediate Reward Restake (UC25)
 
 ```gherkin
-Feature: Epoch State Machine
-  Scenario: ANNOUNCED to ACTIVE transition
-    Given epoch is in ANNOUNCED state
-    And current day >= epoch.startDay
-    When updateEpochStates() is called
-    Then epoch state should change to ACTIVE
-    And epoch should be moved from announced to active list
-    And state should be queryable
-
-  Scenario: ACTIVE to ENDED transition
-    Given epoch is in ACTIVE state
-    And current day > epoch.endDay
-    When updateEpochStates() is called
-    Then epoch state should change to ENDED
-    And epoch should be removed from active list
-
-  Scenario: ENDED to CALCULATED transition
-    Given epoch is in ENDED state
-    And admin sets actual pool size
-    When admin calls finalizeEpoch(epochId, participants, totalWeight)
-    Then epoch state should change to CALCULATED
-    And statistics should be recorded
-    And calculatedAt timestamp should be set
+Feature: Immediate Reward Restaking
+  Scenario: User claims and restakes an immediate reward
+    Given a USER_CLAIMABLE strategy is registered and funded
+    And a user has an active stake
+    When the user calls RewardManager.claimImmediateAndRestake(strategyId, stakeId, daysLock)
+    Then the reward amount is calculated
+    And the reward tokens are transferred to the StakingVault
+    And the StakingVault's stakeFromClaim() function is called to create a new stake for the user
+    And the user's lastClaimDay is updated
 ```
 
-### TC_R06: Epoch Pool Management (UC22)
+### TC_SCS01: Simple Strategy Full Period Calculation
 
 ```gherkin
-Feature: Epoch Pool Size Management
-  Scenario: Set actual pool size for ended epoch
-    Given epoch is in ENDED state
-    When admin calls setEpochPoolSize(epochId, actualAmount)
-    Then epoch.actualPoolSize should be updated
-    And epoch should be ready for calculation
-
-  Scenario: Set pool size for non-ended epoch
-    Given epoch is not in ENDED state
-    When setEpochPoolSize is called
-    Then transaction should revert with EpochNotEnded error
+Feature: Simple User Claimable Strategy Calculation
+  Scenario: User has an active stake for the full period
+    Given a user's stake was active for a full period
+    And the reward rate is set
+    When calculateReward is called for that period
+    Then the returned reward should be (stake.amount * rate * days)
 ```
 
-### TC_R07: Immediate Reward Calculation (UC23)
+### TC_SCS02: Simple Strategy Partial Period Calculation
 
 ```gherkin
-Feature: APR-Style Reward Processing
-  Scenario: Calculate immediate rewards for batch of users
-    Given strategy is registered and active
-    And strategy type is IMMEDIATE
-    And users have stakes within time period
-    And batch size is within limits
-    When admin calls calculateImmediateRewards(strategyId, fromDay, toDay, batchStart, batchSize)
-    Then system should fetch user stakes via pagination
-    And strategy should determine stake applicability
-    And rewards should be calculated for eligible stakes
-    And rewards should be granted to GrantedRewardStorage
-    And processing should be gas-efficient
-
-  Scenario: Calculate rewards with invalid strategy
-    Given strategy is not IMMEDIATE type
-    When calculateImmediateRewards is called
-    Then transaction should revert with InvalidStrategyType error
-
-  Scenario: Batch size exceeds maximum
-    Given batch size > MAX_BATCH_SIZE
-    When calculateImmediateRewards is called
-    Then transaction should revert with BatchSizeExceeded error
+Feature: Simple User Claimable Strategy Calculation
+  Scenario: User's stake was only active for a portion of the claim period
+    Given a user's stake starts or ends within the claim period
+    When calculateReward is called
+    Then the reward should be calculated only for the effective days of overlap
 ```
 
-### TC_R08: Epoch Reward Distribution (UC24)
+### TC_RBK01: RewardBookkeeper Query Functions
 
 ```gherkin
-Feature: Pool-Based Reward Distribution
-  Scenario: Calculate epoch rewards for participants
-    Given epoch is in CALCULATED state
-    And epoch has actual pool size set
-    And strategy is EPOCH_BASED type
-    When admin calls calculateEpochRewards(epochId, batchStart, batchSize)
-    Then system should calculate user participation weights
-    And rewards should be distributed proportionally
-    And rewards should be granted with epoch ID
-    And mathematical precision should be maintained
-
-  Scenario: Calculate rewards for non-calculated epoch
-    Given epoch is not in CALCULATED state
-    When calculateEpochRewards is called
-    Then transaction should revert with EpochNotCalculated error
-
-  Scenario: Epoch without pool size
-    Given epoch is CALCULATED but actualPoolSize = 0
-    When calculateEpochRewards is called
-    Then transaction should revert with EpochPoolSizeNotSet error
+Feature: RewardBookkeeper Data Queries
+  Scenario: Querying a user with a mix of claimed and unclaimed rewards
+    Given a user has multiple rewards, some of which are claimed
+    When getUserClaimableAmount is called, it should return the sum of only unclaimed rewards
+    When getUserClaimableRewards is called, it should return the rewards and indices of only unclaimed rewards
+    When getUserRewardsPaginated is called, it should return the correct slice of all rewards
 ```
 
-### TC_R09: User Weight Calculation (UC24)
+### TC_SR01: Strategy Removal
 
 ```gherkin
-Feature: Epoch Participation Weight Calculation
-  Scenario: Calculate user weight for epoch period
-    Given user has stakes during epoch period
-    And stakes have different amounts and durations
-    When _calculateUserEpochWeight is called
-    Then weight should equal sum of (amount × effective_days)
-    And effective days should be intersection of stake period and epoch
-    And unstaked positions should be handled correctly
-    And mathematical precision should be maintained
-
-  Scenario: User with no stakes during epoch
-    Given user has no active stakes during epoch period
-    When weight calculation is performed
-    Then weight should be zero
-    And user should receive no rewards
-```
-
-### TC_R10: Reward Claiming - All Rewards (UC25)
-
-```gherkin
-Feature: Complete Reward Claiming
-  Scenario: Claim all available rewards
-    Given user has multiple unclaimed rewards
-    And rewards are from different strategies/epochs
-    When user calls claimAllRewards()
-    Then all unclaimed rewards should be identified
-    And total amount should be calculated
-    And rewards should be marked as claimed
-    And tokens should be transferred to user
-    And claiming state should be updated
-
-  Scenario: Claim when no rewards available
-    Given user has no unclaimed rewards
-    When claimAllRewards is called
-    Then transaction should revert with NoRewardsToClaim error
-```
-
-### TC_R11: Reward Claiming - Specific Rewards (UC25)
-
-```gherkin
-Feature: Selective Reward Claiming
-  Scenario: Claim specific reward indices
-    Given user has multiple unclaimed rewards
-    And user specifies valid reward indices
-    When user calls claimSpecificRewards(indices[])
-    Then only specified rewards should be claimed
-    And other rewards should remain unclaimed
-    And tokens should be transferred for specified amount
-    And state should be updated correctly
-
-  Scenario: Claim with invalid indices
-    Given user specifies out-of-bounds indices
-    When claimSpecificRewards is called
-    Then transaction should revert with InvalidRewardIndex error
-
-  Scenario: Claim already claimed rewards
-    Given user specifies already-claimed reward indices
-    When claimSpecificRewards is called
-    Then transaction should revert with RewardAlreadyClaimed error
-```
-
-### TC_R12: Epoch-Specific Claiming (UC25)
-
-```gherkin
-Feature: Epoch-Specific Reward Claiming
-  Scenario: Claim rewards from specific epoch
-    Given user has rewards from multiple epochs
-    And user specifies valid epoch ID
-    When user calls claimEpochRewards(epochId)
-    Then only rewards from specified epoch should be claimed
-    And rewards from other epochs should remain unclaimed
-    And claiming should work correctly
-
-  Scenario: Claim from epoch with no rewards
-    Given user has no rewards from specified epoch
-    When claimEpochRewards is called
-    Then transaction should revert with NoClaimableRewardsForEpoch error
-```
-
-### TC_R13: Reward Storage - Grant Tracking (UC26)
-
-```gherkin
-Feature: Reward Grant Management
-  Scenario: Grant reward to user
-    Given reward parameters are valid
-    And caller has CONTROLLER_ROLE
-    When grantReward(user, strategyId, version, amount, epochId) is called
-    Then reward should be added to user's reward array
-    And reward should be marked as unclaimed
-    And RewardGranted event should be emitted
-    And reward should be queryable
-
-  Scenario: Unauthorized reward granting
-    Given caller does not have CONTROLLER_ROLE
-    When grantReward is called
-    Then transaction should revert with access control error
-```
-
-### TC_R14: Reward Storage - Batch Claiming (UC26)
-
-```gherkin
-Feature: Batch Claiming State Management
-  Scenario: Mark multiple rewards as claimed
-    Given user has multiple unclaimed rewards
-    And valid reward indices are provided
-    When batchMarkClaimed(user, indices[]) is called
-    Then specified rewards should be marked as claimed
-    And total amount should be calculated
-    And BatchRewardsClaimed event should be emitted
-    And state should be consistent
-
-  Scenario: Partial batch claiming with some already claimed
-    Given batch includes some already-claimed rewards
-    When batchMarkClaimed is called
-    Then only unclaimed rewards should be processed
-    And already-claimed rewards should be skipped
-    And operation should succeed partially
-```
-
-### TC_R15: Reward Storage - User Queries (UC26)
-
-```gherkin
-Feature: User Reward Information
-  Scenario: Get user's complete reward history
-    Given user has rewards from multiple strategies/epochs
-    When getUserRewards(user) is called
-    Then complete reward array should be returned
-    And all reward details should be accurate
-    And claimed status should be correct
-
-  Scenario: Get user's claimable amount
-    Given user has mix of claimed and unclaimed rewards
-    When getUserClaimableAmount(user) is called
-    Then total of unclaimed rewards should be returned
-    And calculation should be accurate
-
-  Scenario: Get claimable rewards with indices optimization
-    Given user has large reward history
-    When getUserClaimableRewards is called
-    Then only unclaimed rewards should be returned with indices
-    And optimization should start from nextClaimableIndex
-    And results should be paginated efficiently
-```
-
-### TC_R16: Strategy Implementation - Linear APR (UC23)
-
-```gherkin
-Feature: Linear APR Strategy Calculations
-  Scenario: Calculate historical APR rewards
-    Given stake is applicable to strategy period
-    And annual rate is configured (e.g., 1000 basis points = 10%)
-    When calculateHistoricalReward(staker, stakeId, fromDay, toDay) is called
-    Then reward should equal (amount × rate × days) / (365 × 10000)
-    And calculation should handle partial periods
-    And unstaking should be considered for end period
-    And precision should be maintained
-
-  Scenario: Calculate reward for non-applicable stake
-    Given stake is outside strategy period
-    When calculateHistoricalReward is called
-    Then reward should be zero
-
-  Scenario: Calculate reward with strategy period limits
-    Given stake spans beyond strategy end date
-    When reward calculation is performed
-    Then calculation should use min(toDay, strategyEndDay)
-    And reward should be prorated correctly
-```
-
-### TC_R17: Strategy Implementation - Epoch Pool (UC24)
-
-```gherkin
-Feature: Epoch Pool Strategy Distribution
-  Scenario: Calculate proportional epoch reward
-    Given user weight and total epoch weight are known
-    And pool size is set
-    When calculateEpochReward is called
-    Then reward should equal (userWeight × poolSize) / totalWeight
-    And calculation should handle zero total weight
-    And precision should be maintained
-
-  Scenario: Validate epoch participation
-    Given stake period and epoch period
-    When validateEpochParticipation is called
-    Then should return true if stake overlaps with epoch
-    And should handle unstaked positions correctly
-    And should validate time boundaries
-```
-
-### TC_R18: Access Control - Reward System (UC21-UC26)
-
-```gherkin
-Feature: Reward System Access Control
-  Scenario: Admin functions access control
-    Given various users with different roles
-    When admin-only functions are called
-    Then only users with ADMIN_ROLE should succeed
-    And others should revert with access control error
-    And this applies to: strategy management, epoch management, reward calculation
-
-  Scenario: Controller functions access control
-    Given RewardManager needs to control GrantedRewardStorage
-    When CONTROLLER_ROLE functions are called
-    Then only RewardManager should succeed
-    And direct access should be prevented
-
-  Scenario: User functions public access
-    Given any user
-    When public query functions are called
-    Then access should be allowed for all users
-    And no access control restrictions
-```
-
-### TC_R19: Emergency Controls (UC Security)
-
-```gherkin
-Feature: Reward System Emergency Controls
-  Scenario: Emergency pause reward system
-    Given reward system is operating normally
-    And admin detects security issue
-    When admin calls emergencyPause()
-    Then reward system should be paused
-    And claiming should be blocked
-    And calculations should be blocked
-
-  Scenario: Resume from emergency pause
-    Given reward system is paused
-    When admin calls emergencyResume()
-    Then system should resume normal operations
-    And all functions should work again
-```
-
-### TC_R20: Reentrancy Protection - Rewards (UC25)
-
-```gherkin
-Feature: Reward Claiming Reentrancy Protection
-  Scenario: Attempt reentrancy during claiming
-    Given malicious token contract attempts reentrancy
-    When claiming operation is in progress
-    Then reentrancy attempt should be blocked
-    And state should remain consistent
-    And claiming should complete safely
-
-  Scenario: Normal claiming with reentrancy protection
-    Given standard ERC20 token
-    When normal claiming occurs
-    Then operations should work correctly
-    And protection should not interfere
-```
-
-### TC_R21: Mathematical Precision (UC23, UC24)
-
-```gherkin
-Feature: Reward Calculation Precision
-  Scenario: Large number handling in calculations
-    Given very large stake amounts and long periods
-    When reward calculations are performed
-    Then calculations should not overflow
-    And precision should be maintained within acceptable bounds
-    And rounding should be consistent
-
-  Scenario: Division precision in pool distributions
-    Given pool distribution with prime numbers
-    When rewards are calculated for many users
-    Then total distributed should not exceed pool size
-    And precision loss should be minimized
-    And edge cases should be handled gracefully
-
-  Scenario: Zero values and edge cases
-    Given edge case inputs (zero amounts, zero periods)
-    When calculations are performed
-    Then system should handle gracefully
-    And should not revert unexpectedly
-    And results should be mathematically correct
-```
-
-### TC_R22: Integration - Rewards with Staking Data (UC23, UC24)
-
-```gherkin
-Feature: Reward System Integration with Staking
-  Scenario: Use historical staking data for rewards
-    Given users have complex staking history
-    And multiple stakes with different time periods
-    When reward calculations access staking data
-    Then historical balances should be accurate
-    And checkpoint system should provide correct data
-    And calculations should match actual staking behavior
-
-  Scenario: Real-time staking during active epochs
-    Given epoch is currently active
-    When users stake and unstake during epoch
-    Then weight calculations should reflect real-time changes
-    And epoch statistics should be accurate
-    And integration should be seamless
-```
-
-### TC_R23: Performance - Large Scale Operations (UC23, UC24)
-
-```gherkin
-Feature: Reward System Scalability
-  Scenario: Process rewards for 1000+ users
-    Given large user base with many stakes
-    When batch reward processing is performed
-    Then operations should complete within gas limits
-    And pagination should work efficiently
-    And state should remain consistent
-    And processing should be deterministic
-
-  Scenario: Handle large reward histories
-    Given users with 100+ reward entries
-    When claiming operations are performed
-    Then queries should remain efficient
-    And claiming should work correctly
-    And index optimization should function
-```
-
-### TC_R24: Strategy Parameter Updates (UC21)
-
-```gherkin
-Feature: Dynamic Strategy Configuration
-  Scenario: Update strategy parameters by manager
-    Given strategy manager wants to change parameters
-    And manager has proper permissions
-    When updateParameters(newParams[]) is called
-    Then strategy parameters should be updated
-    And new calculations should use new parameters
-    And old calculations should remain unchanged
-
-  Scenario: Unauthorized parameter update
-    Given caller is not strategy manager
-    When updateParameters is called
-    Then transaction should revert with OnlyManagerCanUpdate error
-```
-
-### TC_R25: Multi-Token Reward Support (UC Future)
-
-```gherkin
-Feature: Different Reward Tokens
-  Scenario: Reward funding with different tokens
-    Given reward system supports multiple tokens
-    When rewards are funded with different ERC20 tokens
-    Then funding should be tracked separately
-    And claiming should work for each token type
-    And accounting should be accurate per token
-
-  Scenario: Cross-token reward calculations
-    Given rewards in different tokens
-    When users claim rewards
-    Then correct tokens should be transferred
-    And amounts should be accurate per token type
-```
-
-### TC_R26: Reward Vesting (UC Future)
-
-```gherkin
-Feature: Time-Locked Reward Vesting
-  Scenario: Rewards with vesting schedules
-    Given rewards are granted with vesting period
-    When users attempt to claim before vesting
-    Then claims should be restricted appropriately
-    And vested portions should be claimable
-    And unvested portions should remain locked
-
-  Scenario: Vesting schedule calculations
-    Given linear vesting over time period
-    When vesting calculations are performed
-    Then available amounts should be accurate
-    And time-based calculations should be correct
-```
-
-### TC_R27: Reward Boost System (UC Future)
-
-```gherkin
-Feature: Multiplier-Based Reward Boosts
-  Scenario: Apply multipliers based on stake duration
-    Given stakes with different lock periods
-    And boost multipliers are configured
-    When rewards are calculated
-    Then longer locks should receive higher multipliers
-    And calculations should be accurate
-    And boosts should compound correctly
-
-  Scenario: Governance participation boosts
-    Given users participate in governance
-    When reward calculations include governance boost
-    Then additional rewards should be granted
-    And boost tracking should be accurate
-```
-
-### TC_R28: Advanced Error Recovery (UC Error Handling)
-
-```gherkin
-Feature: Reward System Error Recovery
-  Scenario: Recovery from partial batch failures
-    Given batch operation fails partially
-    When recovery procedures are executed
-    Then completed operations should remain valid
-    And failed operations should be identifiable
-    And system should return to consistent state
-
-  Scenario: Strategy malfunction handling
-    Given strategy contract has bug or reverts
-    When reward calculations encounter strategy errors
-    Then system should handle gracefully
-    And other strategies should continue working
-    And error should be logged appropriately
-```
-
-### TC_R29: Reward Analytics and Reporting (UC Analytics)
-
-```gherkin
-Feature: Reward System Analytics
-  Scenario: Generate reward distribution reports
-    Given epoch has completed with rewards distributed
-    When analytics queries are performed
-    Then total rewards per strategy should be accurate
-    And user participation statistics should be correct
-    And distribution fairness should be verifiable
-
-  Scenario: Historical reward performance
-    Given multiple epochs and strategies have completed
-    When historical analysis is performed
-    Then reward trends should be queryable
-    And strategy performance should be comparable
-    And data should support governance decisions
-```
-
-### TC_R30: Cross-System Event Coordination (UC Integration)
-
-```gherkin
-Feature: Reward System Event Integration
-  Scenario: Coordinated event emission across contracts
-    Given reward operations span multiple contracts
-    When operations complete
-    Then events should be emitted in correct order
-    And event data should be consistent
-    And off-chain systems should receive complete information
-
-  Scenario: Event-driven off-chain integration
-    Given off-chain systems monitor reward events
-    When reward operations occur
-    Then events should provide sufficient data for indexing
-    And event parameters should be accurate
-    And integration should be reliable
+Feature: Strategy Registry Management
+  Scenario: Manager successfully removes a strategy
+    Given a strategy is registered with a specific ID
+    When a manager calls removeStrategy with that ID
+    Then isStrategyRegistered for that ID should return false
 ```
 
 ## GRANTED REWARD STORAGE TESTS (MISSING)

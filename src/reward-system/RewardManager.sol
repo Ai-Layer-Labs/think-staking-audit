@@ -1,366 +1,367 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.30;
+pragma solidity 0.8.30;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
-import "./StrategiesRegistry.sol";
-import "./GrantedRewardStorage.sol";
-import "./EpochManager.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../interfaces/staking/IStakingStorage.sol";
+import "../interfaces/staking/IStakingVault.sol";
+import "../interfaces/reward/IRewardStrategy.sol";
+import "../interfaces/reward/IRewardManager.sol";
+import "./RewardBookkeeper.sol";
+import "./StrategiesRegistry.sol";
 import "../interfaces/reward/RewardErrors.sol";
-import "../interfaces/reward/RewardEnums.sol";
-import "../interfaces/reward/IImmediateRewardStrategy.sol";
-import "../interfaces/reward/IEpochRewardStrategy.sol";
 
+/**
+ * @title RewardManager
+ * @author @Tudmotu
+ * @notice A refactored, central orchestrator for reward claims and funding.
+ * @dev Supports two distinct reward models:
+ *      1. ADMIN_GRANTED: Claims rewards from a RewardBookkeeper acting as a ledger.
+ *      2. USER_CLAIMABLE: Calculates and pays rewards on-demand for immediate strategies.
+ */
 contract RewardManager is
+    IRewardManager,
+    IRewardStrategy,
     AccessControl,
-    ReentrancyGuard,
     Pausable,
     RewardErrors
 {
     using SafeERC20 for IERC20;
 
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    uint256 public constant MAX_BATCH_SIZE = 100;
+    struct RewardCalculationData {
+        IRewardStrategy strategy;
+        IStakingStorage.Stake stake;
+        uint256 effectiveStartDay;
+        uint8 rewardLayer;
+        IRewardStrategy.Policy stackingPolicy;
+        address rewardToken;
+    }
 
-    StrategiesRegistry public immutable strategyRegistry;
-    GrantedRewardStorage public immutable grantedRewardStorage;
-    EpochManager public immutable epochManager;
+    struct ClaimableRewardInfo {
+        uint16 strategyId;
+        uint32 poolId;
+        uint8 rewardLayer;
+        IRewardStrategy.Policy stackingPolicy;
+        uint256 amount;
+        bool isPermanentlyClaimed; // Is this reward (or a conflicting one) already locked forever?
+    }
+
+    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+
     IStakingStorage public immutable stakingStorage;
-    IERC20 public immutable rewardToken;
+    StrategiesRegistry public immutable strategiesRegistry;
+    RewardBookkeeper public immutable rewardBookkeeper;
+    IStakingVault public immutable stakingVault;
+
+    // For PRE_FUNDED strategies
+    mapping(uint32 => uint256) public strategyBalances; // strategyId -> balance
+
+    mapping(bytes32 stakeId => mapping(uint32 strategyId => uint256 day))
+        public lastClaimDay;
 
     constructor(
-        address admin,
-        address _strategyRegistry,
-        address _grantedRewardStorage,
-        address _epochManager,
-        address _stakingStorage,
-        address _rewardToken
+        address _admin,
+        address _manager,
+        IStakingStorage _stakingStorage,
+        StrategiesRegistry _strategiesRegistry,
+        RewardBookkeeper _rewardBookkeeper,
+        IStakingVault _stakingVault
     ) {
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(ADMIN_ROLE, admin);
-
-        strategyRegistry = StrategiesRegistry(_strategyRegistry);
-        grantedRewardStorage = GrantedRewardStorage(_grantedRewardStorage);
-        epochManager = EpochManager(_epochManager);
-        stakingStorage = IStakingStorage(_stakingStorage);
-        rewardToken = IERC20(_rewardToken);
+        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        _grantRole(MANAGER_ROLE, _manager);
+        stakingStorage = _stakingStorage;
+        strategiesRegistry = _strategiesRegistry;
+        rewardBookkeeper = _rewardBookkeeper;
+        stakingVault = _stakingVault;
     }
 
-    function calculateImmediateRewards(
-        uint256 strategyId,
-        uint32 fromDay,
-        uint32 toDay,
-        uint256 batchStart,
-        uint256 batchSize
-    ) external onlyRole(ADMIN_ROLE) {
-        require(batchSize <= MAX_BATCH_SIZE, BatchSizeExceeded(batchSize));
-
-        StrategiesRegistry.RegistryEntry memory strategyEntry = strategyRegistry
-            .getStrategy(strategyId);
-        require(
-            strategyEntry.strategyAddress != address(0),
-            StrategyNotFound(strategyId)
-        );
-        require(
-            strategyEntry.strategyType == StrategyType.IMMEDIATE,
-            InvalidStrategyType(strategyId)
-        );
-
-        IImmediateRewardStrategy strategy = IImmediateRewardStrategy(
-            strategyEntry.strategyAddress
-        );
-        uint16 strategyVersion = strategyEntry.version;
-
-        address[] memory stakers = stakingStorage.getStakersPaginated(
-            batchStart,
-            batchSize
-        );
-
-        for (uint256 i = 0; i < stakers.length; i++) {
-            _processImmediateRewardsForStaker(
-                stakers[i],
-                strategy,
-                strategyId,
-                strategyVersion,
-                fromDay,
-                toDay
-            );
-        }
-    }
-
-    function _processImmediateRewardsForStaker(
-        address staker,
-        IImmediateRewardStrategy strategy,
-        uint256 strategyId,
-        uint16 strategyVersion,
-        uint32 fromDay,
-        uint32 toDay
-    ) internal {
-        bytes32[] memory stakeIds = stakingStorage.getStakerStakeIds(staker);
-
-        for (uint256 j = 0; j < stakeIds.length; j++) {
-            bytes32 stakeId = stakeIds[j];
-            if (strategy.isApplicable(stakeId)) {
-                uint256 reward = strategy.calculateHistoricalReward(
-                    stakeId,
-                    fromDay,
-                    toDay
-                );
-                if (reward > 0)
-                    grantedRewardStorage.grantReward(
-                        staker,
-                        strategyId,
-                        strategyVersion,
-                        reward,
-                        0
-                    );
-            }
-        }
-    }
-
-    function calculateEpochRewards(
-        uint32 epochId,
-        uint256 batchStart,
-        uint256 batchSize
-    ) external onlyRole(ADMIN_ROLE) {
-        require(batchSize <= MAX_BATCH_SIZE, BatchSizeExceeded(batchSize));
-
-        EpochManager.Epoch memory epoch = epochManager.getEpoch(epochId);
-        require(
-            epoch.state == EpochState.CALCULATED,
-            EpochNotCalculated(epochId)
-        );
-        require(epoch.actualPoolSize > 0, EpochPoolSizeNotSet(epochId));
-
-        StrategiesRegistry.RegistryEntry memory strategyEntry = strategyRegistry
-            .getStrategy(epoch.strategyId);
-        require(
-            strategyEntry.strategyAddress != address(0),
-            StrategyNotFound(epoch.strategyId)
-        );
-        require(
-            strategyEntry.strategyType == StrategyType.EPOCH_BASED,
-            InvalidStrategyType(epoch.strategyId)
-        );
-
-        address[] memory stakers = stakingStorage.getStakersPaginated(
-            batchStart,
-            batchSize
-        );
-
-        for (uint256 i = 0; i < stakers.length; i++) {
-            _processEpochRewardsForStaker(stakers[i], epoch, strategyEntry);
-        }
-    }
-
-    function _processEpochRewardsForStaker(
-        address staker,
-        EpochManager.Epoch memory epoch,
-        StrategiesRegistry.RegistryEntry memory strategyEntry
-    ) internal {
-        uint256 userStakeWeight = calculateUserEpochWeight(
-            staker,
-            epoch.startDay,
-            epoch.endDay
-        );
-
-        if (userStakeWeight > 0) {
-            IEpochRewardStrategy strategy = IEpochRewardStrategy(
-                strategyEntry.strategyAddress
-            );
-            uint256 totalEpochWeight = epoch.totalStakeWeight;
-
-            uint256 reward = strategy.calculateEpochReward(
-                epoch.epochId,
-                userStakeWeight,
-                totalEpochWeight,
-                epoch.actualPoolSize
-            );
-            if (reward > 0) {
-                grantedRewardStorage.grantReward(
-                    staker,
-                    epoch.strategyId,
-                    strategyEntry.version,
-                    reward,
-                    epoch.epochId
-                );
-            }
-        }
-    }
-
-    function claimAllRewards() external nonReentrant returns (uint256) {
-        (, uint256[] memory indices) = grantedRewardStorage
-            .getUserClaimableRewards(msg.sender);
-        require(indices.length > 0, NoRewardsToClaim(msg.sender));
-        return _claimRewards(indices);
-    }
-
-    function claimSpecificRewards(
-        uint256[] calldata rewardIndices
-    ) external nonReentrant returns (uint256) {
-        require(rewardIndices.length > 0, NoRewardsToClaim(msg.sender));
-        return _claimRewards(rewardIndices);
-    }
-
-    function claimEpochRewards(
-        uint32 epochId
-    ) external nonReentrant returns (uint256) {
-        (
-            GrantedRewardStorage.GrantedReward[] memory allClaimableRewards,
-            uint256[] memory allClaimableIndices
-        ) = grantedRewardStorage.getUserClaimableRewards(msg.sender);
-
-        uint256 epochRewardCount = 0;
-        for (uint256 i = 0; i < allClaimableRewards.length; i++) {
-            if (allClaimableRewards[i].epochId == epochId) epochRewardCount++;
-        }
-
-        require(epochRewardCount > 0, NoClaimableRewardsForEpoch(epochId));
-
-        uint256[] memory epochRewardIndices = new uint256[](epochRewardCount);
-        uint256 counter = 0;
-        for (uint256 i = 0; i < allClaimableRewards.length; i++) {
-            if (allClaimableRewards[i].epochId == epochId) {
-                epochRewardIndices[counter] = allClaimableIndices[i];
-                counter++;
-            }
-        }
-
-        return _claimRewards(epochRewardIndices);
-    }
-
-    function getClaimableRewards(address user) external view returns (uint256) {
-        return grantedRewardStorage.getUserClaimableAmount(user);
-    }
-
-    function getUserRewardSummary(
-        address user
-    )
-        external
-        view
-        returns (
-            uint256 totalGranted,
-            uint256 totalClaimed,
-            uint256 totalClaimable
-        )
-    {
-        GrantedRewardStorage.GrantedReward[]
-            memory userRewards = grantedRewardStorage.getUserRewards(user);
-
-        for (uint256 i = 0; i < userRewards.length; i++) {
-            uint128 amount = userRewards[i].amount;
-            totalGranted += amount;
-            if (userRewards[i].claimed) totalClaimed += amount;
-        }
-        totalClaimable = totalGranted - totalClaimed;
-    }
-
-    function addRewardFunds(uint256 amount) external {
-        rewardToken.safeTransferFrom(msg.sender, address(this), amount);
-    }
-
-    function emergencyPause() external onlyRole(ADMIN_ROLE) {
+    function pause() external onlyRole(MANAGER_ROLE) {
         _pause();
     }
 
-    function emergencyResume() external onlyRole(ADMIN_ROLE) {
+    function unpause() external onlyRole(MANAGER_ROLE) {
         _unpause();
     }
 
-    function _claimRewards(
-        uint256[] memory rewardIndices
-    ) internal returns (uint256) {
-        uint256 totalAmount = 0;
-        GrantedRewardStorage.GrantedReward[]
-            memory userRewards = grantedRewardStorage.getUserRewards(
-                msg.sender
-            );
+    // ═══════════════════════════════════════════════════════════════════
+    //                        FUNDING FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════
 
-        for (uint256 i = 0; i < rewardIndices.length; i++) {
-            uint256 index = rewardIndices[i];
-            require(index < userRewards.length, InvalidRewardIndex(index));
-            GrantedRewardStorage.GrantedReward memory reward = userRewards[
-                index
-            ];
-            require(!reward.claimed, RewardAlreadyClaimed(index));
-            totalAmount += reward.amount;
-        }
+    function depositForStrategy(
+        uint32 _strategyId,
+        uint256 _amount
+    ) external onlyRole(MANAGER_ROLE) {
+        address strategyAddress = strategiesRegistry.getStrategyAddress(
+            _strategyId
+        );
+        require(
+            strategyAddress != address(0),
+            RewardErrors.StrategyNotRegistered(_strategyId)
+        );
 
-        require(totalAmount > 0, NoRewardsToClaim(msg.sender));
+        IRewardStrategy strategy = IRewardStrategy(strategyAddress);
+        (, address rewardToken, , , ) = strategy.getParameters();
 
-        grantedRewardStorage.batchMarkClaimed(msg.sender, rewardIndices);
-        rewardToken.safeTransfer(msg.sender, totalAmount);
+        require(_amount > 0, RewardErrors.DeclaredRewardZero());
 
-        grantedRewardStorage.updateNextClaimableIndex(msg.sender);
+        strategyBalances[_strategyId] += _amount;
+        IERC20(rewardToken).safeTransferFrom(
+            msg.sender,
+            address(this),
+            _amount
+        );
 
-        return totalAmount;
+        emit StrategyFunded(_strategyId, _amount);
     }
 
-    /**
-     * @notice Calculate user's total stake weight during an epoch period
-     * @param user The user address
-     * @param epochStartDay Epoch start day
-     * @param epochEndDay Epoch end day
-     * @return totalWeight User's total weight (amount × days staked during epoch)
-     */
-    function calculateUserEpochWeight(
-        address user,
-        uint32 epochStartDay,
-        uint32 epochEndDay
-    ) public view returns (uint256) {
-        uint256 totalWeight = 0;
-        bytes32[] memory stakeIds = stakingStorage.getStakerStakeIds(user);
+    // ═══════════════════════════════════════════════════════════════════
+    //                        CLAIM FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════
 
-        for (uint256 i = 0; i < stakeIds.length; i++) {
-            IStakingStorage.Stake memory stake = stakingStorage.getStake(
-                stakeIds[i]
+    function claimImmediateReward(
+        uint32 _strategyId,
+        bytes32 _stakeId
+    ) public whenNotPaused returns (uint256) {
+        uint256 rewardAmount = _calculateAndValidateImmediateReward(
+            msg.sender,
+            _strategyId,
+            _stakeId
+        );
+        require(rewardAmount > 0, RewardErrors.NoRewardToClaim());
+
+        address strategyAddress = strategiesRegistry.getStrategyAddress(
+            _strategyId
+        );
+        IRewardStrategy strategy = IRewardStrategy(strategyAddress);
+        (, address rewardToken, , , ) = strategy.getParameters();
+
+        // For PRE_FUNDED, check balance. For others, assume contract has funds.
+        if (strategyBalances[_strategyId] > 0) {
+            require(
+                strategyBalances[_strategyId] >= rewardAmount,
+                RewardErrors.InsufficientDepositedFunds(
+                    rewardAmount,
+                    strategyBalances[_strategyId]
+                )
             );
 
-            // Check if stake overlaps with epoch period
-            if (
-                stake.stakeDay <= epochEndDay &&
-                (stake.unstakeDay == 0 || stake.unstakeDay >= epochStartDay)
-            ) {
-                uint32 effectiveStart = stake.stakeDay > epochStartDay
-                    ? stake.stakeDay
-                    : epochStartDay;
-                uint32 effectiveEnd = (stake.unstakeDay == 0 ||
-                    stake.unstakeDay > epochEndDay)
-                    ? epochEndDay
-                    : stake.unstakeDay;
+            strategyBalances[_strategyId] -= rewardAmount;
+        }
 
-                if (effectiveEnd > effectiveStart) {
-                    uint256 effectiveDays = effectiveEnd - effectiveStart;
-                    totalWeight += stake.amount * effectiveDays;
+        IERC20(rewardToken).safeTransfer(msg.sender, rewardAmount);
+
+        return rewardAmount;
+    }
+
+    function claimGrantedRewards() public whenNotPaused {
+        (
+            RewardBookkeeper.GrantedReward[] memory rewards,
+            uint256[] memory indices
+        ) = rewardBookkeeper.getUserClaimableRewards(msg.sender);
+        require(rewards.length > 0, RewardErrors.NoRewardToClaim());
+
+        // This simplified version assumes a single reward token for all granted rewards in the batch.
+        uint256 totalAmount;
+        address rewardToken;
+
+        // Get the token from the first reward's strategy
+        uint32 firstStrategyId = rewards[0].strategyId;
+        address firstStrategyAddress = strategiesRegistry.getStrategyAddress(
+            firstStrategyId
+        );
+        require(
+            firstStrategyAddress != address(0),
+            RewardErrors.StrategyNotRegistered(firstStrategyId)
+        );
+        (, rewardToken, , , ) = IRewardStrategy(firstStrategyAddress)
+            .getParameters();
+
+        for (uint256 i = 0; i < rewards.length; i++) {
+            totalAmount += rewards[i].amount;
+        }
+
+        IERC20(rewardToken).safeTransfer(msg.sender, totalAmount);
+
+        // Mark as claimed in the bookkeeper
+        rewardBookkeeper.batchMarkClaimed(msg.sender, indices);
+
+        emit GrantedRewardsClaimed(msg.sender, totalAmount, rewards.length);
+    }
+
+    function claimImmediateAndRestake(
+        uint32 _strategyId,
+        bytes32 _stakeId,
+        uint16 _daysLock
+    ) external whenNotPaused {
+        uint256 claimedAmount = _calculateAndValidateImmediateReward(
+            msg.sender,
+            _strategyId,
+            _stakeId
+        );
+        require(claimedAmount > 0, RewardErrors.NoRewardToRestake());
+
+        address strategyAddress = strategiesRegistry.getStrategyAddress(
+            _strategyId
+        );
+        IRewardStrategy strategy = IRewardStrategy(strategyAddress);
+        (, address rewardToken, , , ) = strategy.getParameters();
+
+        // Transfer the reward to the StakingVault, so it can create the stake.
+        IERC20(rewardToken).safeTransfer(address(stakingVault), claimedAmount);
+
+        // Now call the existing stakeFromClaim function.
+        stakingVault.stakeFromClaim(
+            msg.sender,
+            uint128(claimedAmount),
+            _daysLock
+        );
+    }
+
+    function claimRewards(uint32[] calldata _strategyIds) external {
+        address user = msg.sender;
+        uint256 totalAmountToPay = 0;
+        mapping(uint8 => bool) layersWithExclusiveClaim;
+
+        for (uint i = 0; i < _strategyIds.length; i++) {
+            uint32 strategyId = _strategyIds[i];
+
+            // Get strategy parameters
+            (
+                ,
+                uint8 rewardLayer,
+                Policy stackingPolicy,
+                ClaimType claimType
+            ) = strategiesRegistry.getStrategy(strategyId).getParameters();
+
+            // Check for conflicts within this transaction
+            if (
+                stackingPolicy == Policy.EXCLUSIVE_IN_LAYER &&
+                layersWithExclusiveClaim[rewardLayer]
+            ) {
+                revert(
+                    "Cannot claim multiple exclusive rewards from the same layer."
+                );
+            }
+
+            //   // All strategies must be associated with a Pool to provide context for the lock.
+            uint32 poolId = getPoolForStrategy(strategyId);
+
+            // Check the permanent lock
+            if (stackingPolicy == Policy.EXCLUSIVE_IN_LAYER) {
+                require(
+                    !hasClaimedForPoolLayer[user][rewardLayer][poolId],
+                    "Reward already claimed."
+                );
+            }
+
+            uint256 rewardAmount = 0;
+            if (claimType == ClaimType.ADMIN_GRANTED) {
+                rewardAmount = rewardBookkeeper.findAndMarkClaimed(
+                    user,
+                    strategyId,
+                    poolId
+                ); // Pass poolId for precision
+            } else {
+                // USER_CLAIMABLE
+                rewardAmount = strategiesRegistry
+                    .getStrategy(strategyId)
+                    .calculateReward(
+                        user,
+                        stake,
+                        effectiveStartDay,
+                        currentDay - 1
+                    );
+            }
+
+            if (rewardAmount > 0) {
+                totalAmountToPay += rewardAmount;
+
+                // If exclusive, set the permanent lock and the in-transaction lock.
+                if (stackingPolicy == Policy.EXCLUSIVE_IN_LAYER) {
+                    hasClaimedForPoolLayer[user][rewardLayer][poolId] = true;
+                    layersWithExclusiveClaim[rewardLayer] = true;
                 }
             }
         }
 
-        return totalWeight;
+        // Perform single payment
+        if (totalAmountToPay > 0) {
+            rewardToken.safeTransfer(user, totalAmountToPay);
+        }
     }
 
-    /**
-     * @notice Get the effective period a stake was active within a time range
-     * @param stakeId The stake identifier
-     * @param fromDay Start day of the period
-     * @param toDay End day of the period
-     * @return effectiveStart The effective start day
-     * @return effectiveEnd The effective end day
-     */
-    function getStakeEffectivePeriod(
-        bytes32 stakeId,
-        uint32 fromDay,
-        uint32 toDay
-    ) public view returns (uint32 effectiveStart, uint32 effectiveEnd) {
-        IStakingStorage.Stake memory stake = stakingStorage.getStake(stakeId);
-        effectiveStart = stake.stakeDay > fromDay ? stake.stakeDay : fromDay;
-        effectiveEnd = stake.unstakeDay > 0 && stake.unstakeDay < toDay
-            ? stake.unstakeDay
-            : toDay;
+    // ===================================================================
+    //                        INTERNAL LOGIC
+    // ===================================================================
+
+    function _getRewardCalculationData(
+        address _user,
+        uint32 _strategyId,
+        bytes32 _stakeId
+    ) internal view returns (RewardCalculationData memory data) {
+        address owner = address(uint160(uint256(_stakeId) >> 96));
+        require(owner == _user, "Not stake owner");
+
+        address strategyAddress = strategiesRegistry.getStrategyAddress(
+            _strategyId
+        );
+        require(strategyAddress != address(0), "Strategy not registered");
+
+        data.strategy = IRewardStrategy(strategyAddress);
+        (, data.rewardToken, data.rewardLayer, data.stackingPolicy, ) = data
+            .strategy
+            .getParameters();
+
+        data.stake = stakingStorage.getStake(_stakeId);
+        uint256 lastClaim = lastClaimDay[_stakeId][_strategyId];
+        data.effectiveStartDay = lastClaim > data.stake.stakeDay
+            ? lastClaim + 1
+            : data.stake.stakeDay;
+    }
+
+    function _calculateAndValidateImmediateReward(
+        address _user,
+        uint32 _strategyId,
+        bytes32 _stakeId
+    ) internal returns (uint256) {
+        RewardCalculationData memory data = _getRewardCalculationData(
+            _user,
+            _strategyId,
+            _stakeId
+        );
+        uint256 currentDay = block.timestamp / 1 days;
+
+        if (data.effectiveStartDay >= currentDay) return 0;
+
+        uint256 rewardAmount = data.strategy.calculateReward(
+            _user,
+            data.stake,
+            data.effectiveStartDay,
+            currentDay - 1 // Rewards are for completed days
+        );
+        if (rewardAmount == 0) return 0;
+
+        // Enforce exclusivity and update timestamps
+        if (data.stackingPolicy == IRewardStrategy.Policy.EXCLUSIVE_IN_LAYER) {
+            require(
+                exclusiveClaimDay[_stakeId][data.rewardLayer] != currentDay,
+                "Layer is locked"
+            );
+            exclusiveClaimDay[_stakeId][data.rewardLayer] = currentDay;
+        }
+        lastClaimDay[_stakeId][_strategyId] = currentDay;
+
+        emit ImmediateRewardClaimed(
+            _user,
+            _strategyId,
+            _stakeId,
+            rewardAmount,
+            data.effectiveStartDay,
+            currentDay
+        );
+
+        return rewardAmount;
     }
 }

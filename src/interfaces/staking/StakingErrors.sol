@@ -21,6 +21,7 @@ interface StakingErrors {
     error NotStakeOwner(address caller, address owner);
     error StakerNotFound(address staker);
     error UnauthorizedCaller(address caller, bytes32 requiredRole);
+    error ControllerAlreadySet();
 
     // ============================================================================
     // Token and Recovery Errors

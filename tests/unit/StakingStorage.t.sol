@@ -49,7 +49,7 @@ contract StakingStorageTest is Test {
 
     function setUp() public {
         token = new MockERC20("Test Token", "TEST");
-        stakingStorage = new StakingStorage(admin, manager, address(0));
+        stakingStorage = new StakingStorage(admin, manager);
         vault = new StakingVault(
             IERC20(token),
             address(stakingStorage),
@@ -81,6 +81,9 @@ contract StakingStorageTest is Test {
         vm.startPrank(user3);
         token.approve(address(vault), type(uint256).max);
         vm.stopPrank();
+
+        // Warp time to avoid day 0 issues in tests
+        vm.warp(10 days);
     }
 
     // ============================================================================
@@ -157,6 +160,12 @@ contract StakingStorageTest is Test {
         assertEq(
             stakingStorage.getStakerBalanceAt(user1, day3 + 10),
             STAKE_AMOUNT * 6
+        );
+
+        // Query day before first checkpoint
+        assertEq(
+            stakingStorage.getStakerBalanceAt(user1, day1 - 1),
+            0
         );
 
         vm.stopPrank();
