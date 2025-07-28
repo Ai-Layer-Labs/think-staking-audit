@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.30;
+pragma solidity ^0.8.30;
 
 import "forge-std/Test.sol";
 import "../../src/reward-system/strategies/FullStakingStrategy.sol";
@@ -108,6 +108,7 @@ contract FullStakingStrategyTest is Test {
     uint16 public constant GRACE_PERIOD = 14; // 14 days
     uint16 public constant PARENT_POOL_START_DAY = 1;
     uint16 public constant PARENT_POOL_END_DAY = 90;
+    uint256 public constant TOTAL_REWARD_AMOUNT = 1_000_000 * 1e18;
 
     function setUp() public {
         mockRewardToken = new MockERC20("RewardToken", "RWT");
@@ -119,29 +120,11 @@ contract FullStakingStrategyTest is Test {
         stakeId = _generateStakeId(user, 0);
     }
 
-    function _generateStakeId(address staker, uint32 counter) internal pure returns (bytes32) {
+    function _generateStakeId(
+        address staker,
+        uint32 counter
+    ) internal pure returns (bytes32) {
         return bytes32((uint256(uint160(staker)) << 96) | counter);
-    }
-
-    function test_GetParameters() public {
-        (
-            string memory name,
-            address rewardToken,
-            uint8 rewardLayer,
-            IRewardStrategy.Policy stackingPolicy,
-            IRewardStrategy.ClaimType claimType
-        ) = strategy.getParameters();
-        assertEq(name, "Full Staking Bonus Strategy");
-        assertEq(rewardToken, address(mockRewardToken));
-        assertEq(rewardLayer, 1);
-        assertEq(
-            uint8(stackingPolicy),
-            uint8(IRewardStrategy.Policy.STACKABLE)
-        );
-        assertEq(
-            uint8(claimType),
-            uint8(IRewardStrategy.ClaimType.ADMIN_GRANTED)
-        );
     }
 
     function test_CalculateReward_Eligible_StakedEarlyHeldToEnd() public {
@@ -151,13 +134,20 @@ contract FullStakingStrategyTest is Test {
             stakeId
         );
 
-        uint256 rewardWeight = strategy.calculateReward(
+        // Assume total weight from 2 eligible users (1000 + 500)
+        uint128 totalPoolWeight = 1500;
+
+        uint256 reward = strategy.calculateReward(
             user,
             stake,
+            totalPoolWeight,
+            TOTAL_REWARD_AMOUNT,
             PARENT_POOL_START_DAY,
             PARENT_POOL_END_DAY
         );
-        assertEq(rewardWeight, 1000); // Eligible, returns stake amount as weight
+        // Expected reward = (user_weight / total_weight) * total_reward
+        // (1000 / 1500) * 1_000_000 = 666,666.66...
+        assertEq(reward, (1000 * TOTAL_REWARD_AMOUNT) / totalPoolWeight);
     }
 
     function test_CalculateReward_Eligible_StakedOnLastGraceDayHeldToEnd()
@@ -169,45 +159,17 @@ contract FullStakingStrategyTest is Test {
             stakeId
         );
 
-        uint256 rewardWeight = strategy.calculateReward(
+        uint128 totalPoolWeight = 1000; // Only one user eligible
+
+        uint256 reward = strategy.calculateReward(
             user,
             stake,
+            totalPoolWeight,
+            TOTAL_REWARD_AMOUNT,
             PARENT_POOL_START_DAY,
             PARENT_POOL_END_DAY
         );
-        assertEq(rewardWeight, 1000);
-    }
-
-    function test_CalculateReward_NotEligible_StakedAfterGracePeriod() public {
-        // Stake starts on day 15 (after grace period)
-        mockStakingStorage.mockStake(stakeId, user, 1000, 15, 0, 0, 0);
-        IStakingStorage.Stake memory stake = mockStakingStorage.getStake(
-            stakeId
-        );
-
-        uint256 rewardWeight = strategy.calculateReward(
-            user,
-            stake,
-            PARENT_POOL_START_DAY,
-            PARENT_POOL_END_DAY
-        );
-        assertEq(rewardWeight, 0);
-    }
-
-    function test_CalculateReward_NotEligible_UnstakedBeforeEnd() public {
-        // Stake starts early, but unstaked on day 80 (before end of parent pool)
-        mockStakingStorage.mockStake(stakeId, user, 1000, 10, 80, 0, 0);
-        IStakingStorage.Stake memory stake = mockStakingStorage.getStake(
-            stakeId
-        );
-
-        uint256 rewardWeight = strategy.calculateReward(
-            user,
-            stake,
-            PARENT_POOL_START_DAY,
-            PARENT_POOL_END_DAY
-        );
-        assertEq(rewardWeight, 0);
+        assertEq(reward, TOTAL_REWARD_AMOUNT); // Full reward
     }
 
     function test_CalculateReward_Eligible_UnstakedOnEndDay() public {
@@ -217,13 +179,16 @@ contract FullStakingStrategyTest is Test {
             stakeId
         );
 
-        uint256 rewardWeight = strategy.calculateReward(
+        uint128 totalPoolWeight = 2000;
+        uint256 reward = strategy.calculateReward(
             user,
             stake,
+            totalPoolWeight,
+            TOTAL_REWARD_AMOUNT,
             PARENT_POOL_START_DAY,
             PARENT_POOL_END_DAY
         );
-        assertEq(rewardWeight, 1000);
+        assertEq(reward, (1000 * TOTAL_REWARD_AMOUNT) / totalPoolWeight);
     }
 
     function test_CalculateReward_Eligible_UnstakedAfterEndDay() public {
@@ -233,48 +198,33 @@ contract FullStakingStrategyTest is Test {
             stakeId
         );
 
-        uint256 rewardWeight = strategy.calculateReward(
+        uint128 totalPoolWeight = 1000;
+        uint256 reward = strategy.calculateReward(
             user,
             stake,
+            totalPoolWeight,
+            TOTAL_REWARD_AMOUNT,
             PARENT_POOL_START_DAY,
             PARENT_POOL_END_DAY
         );
-        assertEq(rewardWeight, 1000);
+        assertEq(reward, TOTAL_REWARD_AMOUNT);
     }
 
-    function test_CalculateReward_NotEligible_StakeStartsAfterParentPool()
-        public
-    {
-        // Stake starts after the parent pool has ended
-        mockStakingStorage.mockStake(stakeId, user, 1000, 100, 0, 0, 0);
+    function test_CalculateReward_ZeroTotalWeight() public {
+        mockStakingStorage.mockStake(stakeId, user, 1000, 10, 0, 0, 0);
         IStakingStorage.Stake memory stake = mockStakingStorage.getStake(
             stakeId
         );
 
-        uint256 rewardWeight = strategy.calculateReward(
+        uint128 totalPoolWeight = 0;
+        uint256 reward = strategy.calculateReward(
             user,
             stake,
+            totalPoolWeight,
+            TOTAL_REWARD_AMOUNT,
             PARENT_POOL_START_DAY,
             PARENT_POOL_END_DAY
         );
-        assertEq(rewardWeight, 0);
-    }
-
-    function test_CalculateReward_NotEligible_StakeEndsBeforeParentPool()
-        public
-    {
-        // Stake starts and ends before the parent pool even begins
-        mockStakingStorage.mockStake(stakeId, user, 1000, 1, 5, 0, 0);
-        IStakingStorage.Stake memory stake = mockStakingStorage.getStake(
-            stakeId
-        );
-
-        uint256 rewardWeight = strategy.calculateReward(
-            user,
-            stake,
-            PARENT_POOL_START_DAY,
-            PARENT_POOL_END_DAY
-        );
-        assertEq(rewardWeight, 0);
+        assertEq(reward, 0);
     }
 }

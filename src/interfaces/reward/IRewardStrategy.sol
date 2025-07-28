@@ -1,75 +1,43 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.30;
+pragma solidity ^0.8.30;
 
-import "../staking/IStakingStorage.sol";
+import {IStakingStorage} from "../staking/IStakingStorage.sol";
 
-/**
- * @title IRewardStrategy
- * @author @Tudmotu
- * @notice The universal interface for all reward calculation strategies.
- */
 interface IRewardStrategy {
-    /**
-     * @dev Defines how a strategy interacts with others in the same layer.
-     * STACKABLE: Can be combined with other STACKABLE strategies.
-     * EXCLUSIVE_IN_LAYER: Mutually exclusive with all other strategies in the same layer.
-     */
-    enum Policy {
-        STACKABLE,
-        EXCLUSIVE_IN_LAYER
+    enum StrategyType {
+        POOL_SIZE_INDEPENDENT, // Can calculate anytime (APR-style)
+        POOL_SIZE_DEPENDENT // Requires BE calculation after pool ends - how much were staked during the pool
     }
 
-    /**
-     * @dev Defines how a strategy is funded and claimed.
-     * PRE_FUNDED: The strategy has a specific budget allocated to it in advance by an admin.
-     * CALCULATED_ON_DEMAND: The strategy calculates its reward based on external factors.
-     */
-    enum FundingMode {
-        PRE_FUNDED,
-        CALCULATED_ON_DEMAND
-    }
+    // --- CONFIGURATION VIEW FUNCTIONS ---
+
+    function getName() external view returns (string memory);
+    function getRewardToken() external view returns (address);
+    function getRewardLayer() external view returns (uint8);
+    function getStrategyType() external view returns (StrategyType);
+
+    // --- CORE LOGIC ---
 
     /**
-     * @dev Defines how a reward is claimed by the user.
-     * USER_CLAIMABLE: Users can claim at any time.
-     * ADMIN_GRANTED: An admin must process the pool before users can claim.
-     */
-    enum ClaimType {
-        USER_CLAIMABLE,
-        ADMIN_GRANTED
-    }
-
-    /**
-     * @notice Returns the key parameters of the strategy.
-     * @return name The name of the strategy.
-     * @return rewardToken The address of the ERC20 token used for rewards.
-     * @return rewardLayer The priority layer of the reward.
-     * @return stackingPolicy The policy for combining with other strategies.
-     * @return claimType The method by which rewards are claimed.
-     */
-    function getParameters()
-        external
-        view
-        returns (
-            string memory name,
-            address rewardToken,
-            uint8 rewardLayer,
-            Policy stackingPolicy,
-            ClaimType claimType
-        );
-
-    /**
-     * @notice The universal function to calculate rewards for a given stake over a specific period.
-     * @param user The address of the staker.
-     * @param stake The user's stake data.
-     * @param startDay The start of the calculation period (day).
-     * @param endDay The end of the calculation period (day).
-     * @return The calculated reward amount.
+     * @notice Calculates reward for POOL_SIZE_INDEPENDENT strategies.
      */
     function calculateReward(
         address user,
-        IStakingStorage.Stake memory stake,
-        uint256 startDay,
-        uint256 endDay
+        IStakingStorage.Stake calldata stake,
+        uint16 poolStartDay,
+        uint16 poolEndDay,
+        uint16 lastClaimDay
+    ) external view returns (uint256);
+
+    /**
+     * @notice Calculates reward for POOL_SIZE_DEPENDENT strategies.
+     */
+    function calculateReward(
+        address user,
+        IStakingStorage.Stake calldata stake,
+        uint256 totalPoolWeight,
+        uint256 totalRewardAmount,
+        uint16 poolStartDay,
+        uint16 poolEndDay
     ) external view returns (uint256);
 }

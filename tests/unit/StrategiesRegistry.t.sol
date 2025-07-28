@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-import {Test} from "forge-std/Test.sol";
-import {StrategiesRegistry} from "../../src/reward-system/StrategiesRegistry.sol";
-import {RewardErrors} from "../../src/interfaces/reward/RewardErrors.sol";
+import "forge-std/Test.sol";
+import "../../src/reward-system/StrategiesRegistry.sol";
+import "../../src/interfaces/reward/RewardErrors.sol";
 
 error AccessControlUnauthorizedAccount(address account, bytes32 neededRole);
 

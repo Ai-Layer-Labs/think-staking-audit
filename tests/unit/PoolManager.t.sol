@@ -3,207 +3,435 @@ pragma solidity 0.8.30;
 
 import "forge-std/Test.sol";
 import "../../src/reward-system/PoolManager.sol";
-import "../../src/interfaces/reward/IEnums.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
 
-contract PoolManagerTest is IEnums, Test {
-    PoolManager public poolManager;
+error AccessControlUnauthorizedAccount(address account, bytes32 neededRole);
 
-    address public admin = address(0xA1);
-    address public manager = address(0xB1);
-    uint32 constant DUMMY_STRATEGY_ID = type(uint32).max - 1;
+contract PoolManagerTest is Test {
+    PoolManager poolManager;
+    address admin = makeAddr("admin");
+    address manager = makeAddr("manager");
+    address controller = makeAddr("controller");
+    address user = makeAddr("user");
+
+    uint256 constant POOL_ID = 1;
 
     function setUp() public {
-        poolManager = new PoolManager(admin, manager);
+        vm.prank(admin);
+        poolManager = new PoolManager(admin, manager, controller);
     }
 
-    // ============================================================================
-    //                           upsertPool Tests
-    // ============================================================================
+    function test_UpsertPool_Success() public {
+        vm.prank(manager);
+        uint256 poolId = poolManager.upsertPool(0, 10, 100, 999);
+        assertEq(poolId, 1, "Pool ID should be 1");
 
-    function test_UpsertPool_NewPool_Success() public {
-        vm.startPrank(manager);
-        vm.expectEmit(true, true, true, true);
-        emit PoolManager.PoolUpserted(1, 1, 10, 0, DUMMY_STRATEGY_ID);
-        vm.expectEmit(true, false, false, false);
-        emit PoolManager.PoolStateChanged(1, PoolState.ANNOUNCED);
-
-        uint32 poolId = poolManager.upsertPool(0, 1, 10, 0, DUMMY_STRATEGY_ID);
-        vm.stopPrank();
-
-        assertEq(poolId, 1);
-        (
-            uint32 id,
-            uint16 startDay,
-            uint16 endDay,
-            uint32 strategyId,
-            uint32 parentId
-        ) = poolManager.pools(1);
-        assertEq(id, 1);
-        assertEq(startDay, 1);
-        assertEq(endDay, 10);
-        assertEq(parentId, 0, "parentId should be 0");
-        assertEq(strategyId, DUMMY_STRATEGY_ID);
-        assertEq(uint(poolManager.poolState(1)), uint(PoolState.ANNOUNCED));
-        assertEq(poolManager.nextPoolId(), 2);
+        PoolManager.Pool memory pool = poolManager.getPool(poolId);
+        assertEq(pool.startDay, 10, "Start day mismatch");
+        assertEq(pool.endDay, 100, "End day mismatch");
     }
 
-    function test_UpsertPool_UpdateExisting_Success() public {
-        vm.startPrank(manager);
-        poolManager.upsertPool(0, 1, 10, 0, DUMMY_STRATEGY_ID);
+    function test_UpsertPool_Fail_IfPoolAlreadyStarted() public {
+        // Setup: create a pool that starts on day 10
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
 
-        uint16 newStrategyId = 2;
-        uint32 updatedPoolId = poolManager.upsertPool(
+        // Warp time to day 11, after the pool has started
+        vm.warp(11 days);
+
+        // Attempt to update the started pool
+        vm.prank(manager);
+        vm.expectRevert(PoolManager.PoolAlreadyStarted.selector);
+        poolManager.upsertPool(POOL_ID, 11, 101, 0);
+    }
+
+    function test_AssignStrategy_Fail_IfPoolAlreadyStarted() public {
+        // Setup: create a pool that starts on day 10
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+
+        // Warp time to day 11
+        vm.warp(11 days);
+
+        // Attempt to assign a strategy to the started pool
+        vm.prank(manager);
+        vm.expectRevert(PoolManager.PoolAlreadyStarted.selector);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            1,
+            PoolManager.StrategyExclusivity.NORMAL
+        );
+    }
+
+    function test_SetTotalStakeWeight_Success() public {
+        // Setup: create a pool that ends on day 100
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+        PoolManager.Pool memory poolAfterUpsert = poolManager.getPool(POOL_ID);
+        assertEq(
+            poolAfterUpsert.endDay,
+            100,
+            "End day not set correctly after upsert"
+        );
+
+        // Warp time to day 101, after the pool has ended
+        vm.warp(101 days);
+
+        uint128 totalWeight = 1_000_000 * 1e18;
+        vm.prank(controller);
+        poolManager.setPoolTotalStakeWeight(POOL_ID, totalWeight);
+
+        PoolManager.Pool memory pool = poolManager.getPool(POOL_ID);
+        assertEq(
+            pool.totalPoolWeight,
+            totalWeight,
+            "Total stake weight mismatch"
+        );
+    }
+
+    function test_SetTotalStakeWeight_Fail_IfNotEnded() public {
+        // Setup: create a pool that ends on day 100
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+
+        // Warp time to day 50, while the pool is still active
+        vm.warp(50 days);
+
+        vm.prank(controller);
+        vm.expectRevert(PoolManager.PoolNotEnded.selector);
+        poolManager.setPoolTotalStakeWeight(POOL_ID, 1_000_000 * 1e18);
+    }
+
+    function test_SetTotalStakeWeight_Fail_IfNotController() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+        vm.warp(101 days);
+
+        vm.prank(user); // Not a controller
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AccessControlUnauthorizedAccount.selector,
+                address(this),
+                poolManager.CONTROLLER_ROLE()
+            )
+        );
+        poolManager.setPoolTotalStakeWeight(POOL_ID, 1_000_000 * 1e18);
+    }
+
+    function test_SetPoolLiveWeight_Success() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+
+        uint256 liveWeight = 500 * 1e18;
+        vm.prank(controller);
+        poolManager.setPoolLiveWeight(POOL_ID, liveWeight);
+
+        assertEq(
+            poolManager.poolLiveWeight(POOL_ID),
+            liveWeight,
+            "Live weight mismatch"
+        );
+    }
+
+    function test_SetPoolLiveWeight_Fail_IfNotController() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+
+        vm.prank(user); // Not a controller
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AccessControlUnauthorizedAccount.selector,
+                address(this),
+                poolManager.CONTROLLER_ROLE()
+            )
+        );
+        poolManager.setPoolLiveWeight(POOL_ID, 500 * 1e18);
+    }
+
+    function test_RemoveLayer_Success() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+        vm.prank(manager);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            1,
+            PoolManager.StrategyExclusivity.NORMAL
+        );
+
+        vm.prank(manager);
+        poolManager.removeLayer(POOL_ID, 0);
+
+        assertFalse(
+            poolManager.hasLayer(POOL_ID, 0),
+            "Layer should be removed"
+        );
+    }
+
+    function test_RemoveLayer_Fail_IfPoolActive() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+        vm.warp(11 days);
+
+        vm.prank(manager);
+        vm.expectRevert(PoolManager.PoolAlreadyStarted.selector);
+        poolManager.removeLayer(POOL_ID, 0);
+    }
+
+    function test_RemoveLayer_Fail_IfNotManager() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+
+        vm.prank(user);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AccessControlUnauthorizedAccount.selector,
+                address(this),
+                poolManager.MANAGER_ROLE()
+            )
+        );
+        poolManager.removeLayer(POOL_ID, 0);
+    }
+
+    function test_RemoveStrategyFromPool_Success() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+        vm.prank(manager);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            1,
+            PoolManager.StrategyExclusivity.NORMAL
+        );
+
+        vm.prank(manager);
+        poolManager.removeStrategyFromPool(POOL_ID, 0, 1);
+
+        assertEq(
+            poolManager.getLayerStrategies(POOL_ID, 0).length,
+            0,
+            "Strategy should be removed"
+        );
+    }
+
+    function test_RemoveStrategyFromPool_Fail_IfPoolActive() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+        vm.prank(manager);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            1,
+            PoolManager.StrategyExclusivity.NORMAL
+        );
+        vm.warp(11 days);
+
+        vm.prank(manager);
+        vm.expectRevert(PoolManager.PoolAlreadyStarted.selector);
+        poolManager.removeStrategyFromPool(POOL_ID, 0, 1);
+    }
+
+    function test_RemoveStrategyFromPool_Fail_IfNotManager() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+        vm.prank(manager);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            1,
+            PoolManager.StrategyExclusivity.NORMAL
+        );
+
+        vm.prank(user);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AccessControlUnauthorizedAccount.selector,
+                address(this),
+                poolManager.MANAGER_ROLE()
+            )
+        );
+        poolManager.removeStrategyFromPool(POOL_ID, 0, 1);
+    }
+
+    function test_GetStrategyLayer() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+        vm.prank(manager);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            1,
+            PoolManager.StrategyExclusivity.NORMAL
+        );
+
+        assertEq(poolManager.getStrategyLayer(POOL_ID, 1), 0, "Layer mismatch");
+    }
+
+    function test_GetStrategyExclusivity() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+        vm.prank(manager);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            1,
+            PoolManager.StrategyExclusivity.NORMAL
+        );
+
+        assertEq(
+            uint8(poolManager.getStrategyExclusivity(1)),
+            uint8(PoolManager.StrategyExclusivity.NORMAL),
+            "Exclusivity mismatch"
+        );
+    }
+
+    function test_GetLayerStrategies() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+        vm.prank(manager);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            1,
+            PoolManager.StrategyExclusivity.NORMAL
+        );
+        vm.prank(manager);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            2,
+            PoolManager.StrategyExclusivity.EXCLUSIVE
+        );
+
+        uint32[] memory strategies = poolManager.getLayerStrategies(POOL_ID, 0);
+        assertEq(strategies.length, 2, "Strategy count mismatch");
+        assertEq(strategies[0], 1, "Strategy ID mismatch");
+        assertEq(strategies[1], 2, "Strategy ID mismatch");
+    }
+
+    function test_HasLayer() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+        vm.prank(manager);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            1,
+            PoolManager.StrategyExclusivity.NORMAL
+        );
+
+        assertTrue(poolManager.hasLayer(POOL_ID, 0), "Layer should exist");
+        assertFalse(poolManager.hasLayer(POOL_ID, 1), "Layer should not exist");
+    }
+
+    function test_GetPoolsByDateRange() public {
+        vm.prank(manager);
+        poolManager.upsertPool(0, 10, 20, 0);
+        vm.prank(manager);
+        poolManager.upsertPool(0, 15, 25, 0);
+        vm.prank(manager);
+        poolManager.upsertPool(0, 30, 40, 0);
+
+        uint256[] memory poolsInRange = poolManager.getPoolsByDateRange(12, 22);
+        assertEq(poolsInRange.length, 2, "Pool count mismatch");
+        assertEq(poolsInRange[0], 1, "Pool ID mismatch");
+        assertEq(poolsInRange[1], 2, "Pool ID mismatch");
+    }
+
+    function test_GetPools() public {
+        vm.prank(manager);
+        poolManager.upsertPool(0, 10, 20, 0);
+        vm.prank(manager);
+        poolManager.upsertPool(0, 15, 25, 0);
+
+        uint256[] memory poolIds = new uint256[](2);
+        poolIds[0] = 1;
+        poolIds[1] = 2;
+
+        PoolManager.Pool[] memory pools = poolManager.getPools(poolIds);
+        assertEq(pools.length, 2, "Pool count mismatch");
+        assertEq(pools[0].startDay, 10, "Pool 1 start day mismatch");
+        assertEq(pools[1].startDay, 15, "Pool 2 start day mismatch");
+    }
+
+    function test_GetPoolCount() public {
+        vm.prank(manager);
+        poolManager.upsertPool(0, 10, 20, 0);
+        vm.prank(manager);
+        poolManager.upsertPool(0, 15, 25, 0);
+
+        assertEq(poolManager.getPoolCount(), 2, "Pool count mismatch");
+    }
+
+    function test_IsPoolActive() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+
+        vm.warp(11 days);
+        assertTrue(poolManager.isPoolActive(POOL_ID), "Pool should be active");
+
+        vm.warp(101 days);
+        assertFalse(
+            poolManager.isPoolActive(POOL_ID),
+            "Pool should not be active"
+        );
+    }
+
+    function test_IsPoolEnded() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+
+        vm.warp(101 days);
+        assertTrue(poolManager.isPoolEnded(POOL_ID), "Pool should be ended");
+
+        vm.warp(50 days);
+        assertFalse(
+            poolManager.isPoolEnded(POOL_ID),
+            "Pool should not be ended"
+        );
+    }
+
+    function test_IsPoolCalculated() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+
+        assertFalse(
+            poolManager.isPoolCalculated(POOL_ID),
+            "Pool should not be calculated initially"
+        );
+
+        vm.warp(101 days);
+        vm.prank(controller);
+        poolManager.setPoolTotalStakeWeight(POOL_ID, 1000);
+
+        assertTrue(
+            poolManager.isPoolCalculated(POOL_ID),
+            "Pool should be calculated"
+        );
+    }
+
+    function test_GetPoolLayers() public {
+        vm.prank(manager);
+        poolManager.upsertPool(POOL_ID, 10, 100, 0);
+        vm.prank(manager);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            1,
+            PoolManager.StrategyExclusivity.NORMAL
+        );
+        vm.prank(manager);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
             1,
             2,
-            12,
-            0,
-            newStrategyId
-        );
-        vm.stopPrank();
-
-        assertEq(updatedPoolId, 1);
-        (, uint16 startDay, uint16 endDay, uint32 strategyId, ) = poolManager
-            .pools(1);
-        assertEq(startDay, 2);
-        assertEq(endDay, 12);
-        assertEq(strategyId, newStrategyId);
-        assertEq(poolManager.nextPoolId(), 2); // Should not increment
-    }
-
-    function test_UpsertPool_Fail_StrategyIdZero() public {
-        vm.startPrank(manager);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                RewardErrors.StrategyNotRegistered.selector,
-                0
-            )
-        );
-        poolManager.upsertPool(0, 1, 10, 0, 0);
-        vm.stopPrank();
-    }
-
-    function test_UpsertPool_Fail_PoolIsActive() public {
-        vm.startPrank(manager);
-        uint32 poolId = poolManager.upsertPool(0, 1, 10, 0, DUMMY_STRATEGY_ID);
-        vm.stopPrank();
-
-        vm.warp(5 days); // Move time to make the pool active
-        poolManager.updatePoolState(poolId);
-        assertEq(uint(poolManager.poolState(poolId)), uint(PoolState.ACTIVE));
-
-        vm.startPrank(manager);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                RewardErrors.PoolAlreadyActiveOrFinalized.selector,
-                poolId
-            )
-        );
-        poolManager.upsertPool(poolId, 2, 12, 0, DUMMY_STRATEGY_ID);
-        vm.stopPrank();
-    }
-
-    // ============================================================================
-    //                           updatePoolState Tests
-    // ============================================================================
-
-    function test_UpdatePoolState_AnnouncedToActive() public {
-        vm.startPrank(manager);
-        uint32 poolId = poolManager.upsertPool(0, 5, 15, 0, DUMMY_STRATEGY_ID);
-        vm.stopPrank();
-
-        vm.warp(6 days); // Move time to be within the pool's active period
-
-        vm.expectEmit(true, false, false, false);
-        emit PoolManager.PoolStateChanged(poolId, PoolState.ACTIVE);
-        poolManager.updatePoolState(poolId);
-
-        assertEq(uint(poolManager.poolState(poolId)), uint(PoolState.ACTIVE));
-    }
-
-    function test_UpdatePoolState_ActiveToEnded() public {
-        vm.startPrank(manager);
-        uint32 poolId = poolManager.upsertPool(0, 5, 15, 0, DUMMY_STRATEGY_ID);
-        vm.stopPrank();
-
-        vm.warp(6 days);
-        poolManager.updatePoolState(poolId); // Move to ACTIVE
-
-        vm.warp(16 days); // Move time to be after the pool's end day
-
-        vm.expectEmit(true, false, false, false);
-        emit PoolManager.PoolStateChanged(poolId, PoolState.ENDED);
-        poolManager.updatePoolState(poolId);
-
-        assertEq(uint(poolManager.poolState(poolId)), uint(PoolState.ENDED));
-    }
-
-    function test_UpdatePoolState_Fail_AlreadyCalculated() public {
-        vm.startPrank(manager);
-        uint32 poolId = poolManager.upsertPool(0, 1, 2, 0, DUMMY_STRATEGY_ID);
-        vm.stopPrank();
-
-        vm.warp(3 days);
-        poolManager.updatePoolState(poolId); // ANNOUNCED -> ACTIVE
-        poolManager.updatePoolState(poolId); // ACTIVE -> ENDED
-
-        vm.startPrank(manager);
-        poolManager.finalizePool(poolId, 1000);
-        vm.stopPrank();
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                RewardErrors.PoolNotInitializedOrCalculated.selector,
-                poolId
-            )
-        );
-        poolManager.updatePoolState(poolId);
-    }
-
-    // ============================================================================
-    //                           finalizePool Tests
-    // ============================================================================
-
-    function test_FinalizePool_Success() public {
-        vm.startPrank(manager);
-        uint32 poolId = poolManager.upsertPool(0, 1, 5, 0, DUMMY_STRATEGY_ID);
-        vm.stopPrank();
-
-        vm.warp(10 days);
-        poolManager.updatePoolState(poolId); // ANNOUNCED -> ACTIVE
-        poolManager.updatePoolState(poolId); // ACTIVE -> ENDED
-        assertEq(uint(poolManager.poolState(poolId)), uint(PoolState.ENDED));
-
-        uint256 totalWeight = 50000 * 10 ** 18;
-        vm.startPrank(manager);
-        vm.expectEmit(true, false, false, false);
-        emit PoolManager.PoolFinalized(poolId, totalWeight);
-        vm.expectEmit(true, false, false, false);
-        emit PoolManager.PoolStateChanged(poolId, PoolState.CALCULATED);
-        poolManager.finalizePool(poolId, totalWeight);
-        vm.stopPrank();
-
-        assertEq(poolManager.poolTotalStakeWeight(poolId), totalWeight);
-        assertEq(
-            uint(poolManager.poolState(poolId)),
-            uint(PoolState.CALCULATED)
-        );
-    }
-
-    function test_FinalizePool_Fail_NotEnded() public {
-        vm.startPrank(manager);
-        uint32 poolId = poolManager.upsertPool(0, 1, 5, 0, DUMMY_STRATEGY_ID);
-        vm.stopPrank();
-
-        assertEq(
-            uint(poolManager.poolState(poolId)),
-            uint(PoolState.ANNOUNCED)
+            PoolManager.StrategyExclusivity.EXCLUSIVE
         );
 
-        vm.startPrank(manager);
-        vm.expectRevert(
-            abi.encodeWithSelector(RewardErrors.PoolNotEnded.selector, poolId)
-        );
-        poolManager.finalizePool(poolId, 1000);
-        vm.stopPrank();
+        uint256[] memory layers = poolManager.getPoolLayers(POOL_ID);
+        assertEq(layers.length, 2, "Layer count mismatch");
+        assertEq(layers[0], 0, "Layer ID mismatch");
+        assertEq(layers[1], 1, "Layer ID mismatch");
     }
 }

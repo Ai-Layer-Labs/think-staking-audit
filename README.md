@@ -1,8 +1,8 @@
 # THINK Token Staking System
 
-A secure, flexible staking platform for tokens with time-locked commitments and comprehensive reward mechanisms.
+A secure, modular staking platform for tokens with time-locked commitments and a highly flexible reward system.
 
-![Token Staking & Reward System Architecture](docs/architecture.png)
+_To see the system's structure, view the [**System Architecture Diagram &rarr;**](docs/architecture.md)_
 
 ## Getting Started
 
@@ -24,28 +24,32 @@ This staking platform is built with three core principles: security, data integr
 ### Key Features
 
 - **Security First**: Multi-layered security with role-based access control, including a dedicated `MULTISIG_ROLE` for critical recovery operations. It is protected from reentrancy attacks and can be paused in emergencies.
-- **Advanced Data Management**: Uses a checkpoint system and binary search for highly-efficient historical balance queries (`O(log n)`), alongside individual stake tracking and daily statistical snapshots.
-- **Developer Friendly**: A modular architecture separates logic (`StakingVault`) from data (`StakingStorage`), providing well-defined interfaces and gas-optimized operations to encourage ecosystem expansion.
+- **Flexible Reward System**: A fully modular reward architecture with distinct contracts for scheduling (`PoolManager`), orchestration (`RewardManager`), and claim history (`ClaimsJournal`). This allows for creating complex reward scenarios with different strategies.
+- **Advanced Data Management**: Uses a checkpoint system for highly-efficient historical balance queries (`O(log n)`), which provides the necessary data for fair and accurate reward calculations.
+- **Developer Friendly**: A clear separation of concerns between the staking core and the reward system, providing well-defined interfaces to encourage ecosystem expansion.
 
 ## 🔗 Live Deployments & Status
 
-### Ethereum Mainnnet
+### Ethereum Mainnet
 
-- **StakingVault**: [`0xdd60fd0d51234d22cb105e23867a056a05962e70`](https://etherscan.io/address/0xdd60fd0d51234d22cb105e23867a056a05962e70#code)
+- **StakingVault**: [`0x08071901A5C4D2950888Ce2b299bBd0e3087d101`](https://etherscan.io/address/0x08071901A5C4D2950888Ce2b299bBd0e3087d101#code)
 - **StakingStorage**: [`0xfaa8a501cf7ffd8080b0864f2c959e8cbcf83030`](https://etherscan.io/address/0xfaa8a501cf7ffd8080b0864f2c959e8cbcf83030#code)
+- **Reward System**: _(Awaiting Mainnet Deployment)_
 
 ### Sepolia Testnet
 
+_(Note: These addresses may be from previous development deployments and could be outdated. Always use the latest deployment script for testing.)_
+
 - **StakingVault**: [`0xE9b606be7c543B93D0FF5CE72A0E804d5f4147b2`](https://sepolia.etherscan.io/address/0xE9b606be7c543B93D0FF5CE72A0E804d5f4147b2/#code)
 - **StakingStorage**: [`0xA71dF04aAC1DC6a0E62bC5a396ECaa976fF29f5A`](https://sepolia.etherscan.io/address/0xA71dF04aAC1DC6a0E62bC5a396ECaa976fF29f5A/#code)
-- **PoolManager**: [`0x...`](https://sepolia.etherscan.io/address/0x...#code)
-- **StrategiesRegistry**:[`0x034689a17fF618f6d166f1FEDaC2BD1893c84f96`](https://sepolia.etherscan.io/address/0x034689a17fF618f6d166f1FEDaC2BD1893c84f96#code)
-- **RewardBookkeeper**:[`0x784cb3BAEC35e7E1Eba01FcDA93e95eD6C7615e7`](https://sepolia.etherscan.io/address/0x784cb3BAEC35e7E1Eba01FcDA93e95eD6C7615e7#code)
-- **RewardManager**:[`0x176ce7ac49f636e2ca8762780ea1dc7c8917aebe`](https://sepolia.etherscan.io/address/0x176ce7ac49f636e2ca8762780ea1dc7c8917aebe#code)
+- **PoolManager**: `0x...`
+- **StrategiesRegistry**: `0x...`
+- **RewardManager**: `0x...`
+- **ClaimsJournal**: `0x...`
 
 ### Project Status
 
-The core staking and reward systems are feature-complete and ready for audit. The architecture supports both epoch-based (granted) and continuous (immediate) reward strategies.
+The core staking and reward systems are feature-complete and ready for audit. The architecture supports two types of reward strategies, `POOL_SIZE_INDEPENDENT` (e.g., APR-based) and `POOL_SIZE_DEPENDENT` (e.g., shared reward pools), providing extensive flexibility for future reward programs.
 
 ## 📚 Full Documentation
 
@@ -69,7 +73,7 @@ For a detailed breakdown of all documentation, see the tables below.
 
 ## 🛠️ Technology Stack
 
-- **Smart Contracts**: Solidity ^0.8.30
+- **Smart Contracts**: Solidity ^0.8.20
 - **Testing Framework**: Foundry
 - **Security Libraries**: OpenZeppelin
 

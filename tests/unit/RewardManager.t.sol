@@ -3,396 +3,290 @@ pragma solidity 0.8.30;
 
 import "forge-std/Test.sol";
 import "../../src/reward-system/RewardManager.sol";
-import "../../src/reward-system/RewardBookkeeper.sol";
+import "../../src/reward-system/PoolManager.sol";
+import "../../src/reward-system/ClaimsJournal.sol";
 import "../../src/reward-system/StrategiesRegistry.sol";
+import "../../src/reward-system/strategies/FullStakingStrategy.sol";
 import "../../src/interfaces/reward/IRewardStrategy.sol";
 import "../../src/interfaces/staking/IStakingStorage.sol";
-import "../../src/interfaces/staking/IStakingVault.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../helpers/MockERC20.sol";
+import "../mocks/MockStakingStorage.sol";
 
-// Mocks remain largely the same as they are for interfaces, not concrete implementations.
-// Lean Mock: Implements only necessary functions and reverts on unexpected calls.
-contract LeanMockStakingStorage is IStakingStorage {
-    mapping(bytes32 stakeId => Stake stake) public stakes;
-    mapping(address staker => bytes32[] stakeIds) public stakerStakeIds;
+/// @dev Internal mock for a POOL_SIZE_INDEPENDENT strategy (e.g., APR-based)
+contract MockSimpleStrategy is IRewardStrategy, AccessControl {
+    uint256 public constant APR = 10_000; // 10% with 2 decimals
+    address public immutable rewardToken;
 
-    function getStake(
-        bytes32 _stakeId
-    ) external view override returns (Stake memory) {
-        return stakes[_stakeId];
-    }
-
-    function getStakerStakeIds(
-        address _staker
-    ) external view override returns (bytes32[] memory) {
-        return stakerStakeIds[_staker];
+    constructor(address admin, address _rewardToken) {
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        rewardToken = _rewardToken;
     }
 
-    function mockStake(
-        bytes32 _stakeId,
-        address _owner,
-        uint128 _amount,
-        uint16 _stakeDay
-    ) public {
-        stakes[_stakeId] = Stake({
-            amount: _amount,
-            stakeDay: _stakeDay,
-            unstakeDay: 0,
-            daysLock: 0,
-            flags: 0
-        });
-        stakerStakeIds[_owner].push(_stakeId);
+    function getStrategyType() external pure returns (StrategyType) {
+        return IRewardStrategy.StrategyType.POOL_SIZE_INDEPENDENT;
     }
 
-    // --- Unused functions revert to catch unexpected calls ---
-    function createStake(
-        address,
-        uint128,
-        uint16,
-        uint16
-    ) external override returns (bytes32) {
-        revert("Not Implemented");
-    }
-    function removeStake(address, bytes32) external override {
-        revert("Not Implemented");
-    }
-    function isActiveStake(bytes32) external view override returns (bool) {
-        revert("Not Implemented");
-    }
-    function getStakerInfo(
-        address
-    ) external view override returns (StakerInfo memory) {
-        revert("Not Implemented");
-    }
-    function getStakerBalance(
-        address
-    ) external view override returns (uint128) {
-        revert("Not Implemented");
-    }
-    function getStakerBalanceAt(
-        address,
-        uint16
-    ) external view override returns (uint128) {
-        revert("Not Implemented");
-    }
-    function batchGetStakerBalances(
-        address[] memory,
-        uint16
-    ) external view override returns (uint128[] memory) {
-        revert("Not Implemented");
-    }
-    function getDailySnapshot(
-        uint16
-    ) external view override returns (DailySnapshot memory) {
-        revert("Not Implemented");
-    }
-    function getCurrentTotalStaked() external view override returns (uint128) {
-        revert("Not Implemented");
-    }
-    function getTotalStakersCount() external view override returns (uint256) {
-        revert("Not Implemented");
-    }
-    function getStakersPaginated(
-        uint256,
-        uint256
-    ) external view override returns (address[] memory) {
-        revert("Not Implemented");
-    }
-}
-
-contract MockRewardStrategy is IRewardStrategy {
-    string public mockName;
-    address public mockRewardToken;
-    uint8 public mockRewardLayer;
-    Policy public mockStackingPolicy;
-    ClaimType public mockClaimType;
-    uint256 public mockCalculatedReward;
-
-    constructor(
-        string memory _name,
-        address _rewardToken,
-        uint8 _layer,
-        Policy _policy,
-        ClaimType _claimType
-    ) {
-        mockName = _name;
-        mockRewardToken = _rewardToken;
-        mockRewardLayer = _layer;
-        mockStackingPolicy = _policy;
-        mockClaimType = _claimType;
+    function getName() external pure returns (string memory) {
+        return "MockSimpleStrategy";
     }
 
-    function getParameters()
-        external
-        view
-        override
-        returns (
-            string memory name,
-            address rewardToken,
-            uint8 rewardLayer,
-            Policy stackingPolicy,
-            ClaimType claimType
-        )
-    {
-        return (
-            mockName,
-            mockRewardToken,
-            mockRewardLayer,
-            mockStackingPolicy,
-            mockClaimType
-        );
+    function getRewardToken() external view returns (address) {
+        return rewardToken;
+    }
+
+    function getRewardLayer() external pure returns (uint8) {
+        return 0; // Not used in this mock
+    }
+
+    function calculateReward(
+        address, // user
+        IStakingStorage.Stake calldata stake,
+        uint16 poolStartDay,
+        uint16 poolEndDay,
+        uint16 lastClaimDay
+    ) external view returns (uint256) {
+        uint256 currentDay = block.timestamp / 1 days;
+        uint256 startDay = lastClaimDay == 0 ? stake.stakeDay : lastClaimDay;
+
+        if (currentDay <= startDay) {
+            return 0;
+        }
+
+        uint256 daysToCalculate = currentDay - startDay;
+        return (stake.amount * APR * daysToCalculate) / (100_000 * 365);
     }
 
     function calculateReward(
         address,
-        IStakingStorage.Stake memory stake,
-        uint256 startTime,
-        uint256 endTime
-    ) external view override returns (uint256) {
-        if (mockCalculatedReward > 0) return mockCalculatedReward;
-        return stake.amount * (endTime - startTime); // Simplified logic
-    }
-
-    function setMockCalculatedReward(uint256 _amount) public {
-        mockCalculatedReward = _amount;
-    }
-}
-
-contract LeanMockStakingVault is IStakingVault {
-    bytes32 public constant CLAIM_CONTRACT_ROLE =
-        keccak256("CLAIM_CONTRACT_ROLE");
-    mapping(address => bool) public isClaimContract;
-    address public lastStaker;
-    uint128 public lastAmount;
-    uint16 public lastDaysLock;
-
-    event StakeFromClaimCalled(
-        address indexed staker,
-        uint128 amount,
-        uint16 daysLock
-    );
-
-    function grantRole(bytes32 role, address account) public {
-        if (role == CLAIM_CONTRACT_ROLE) isClaimContract[account] = true;
-    }
-
-    function stakeFromClaim(
-        address staker,
-        uint128 amount,
-        uint16 daysLock
-    ) external override returns (bytes32) {
-        require(
-            isClaimContract[msg.sender],
-            "MockStakingVault: Caller is not a claim contract"
-        );
-        lastStaker = staker;
-        lastAmount = amount;
-        lastDaysLock = daysLock;
-        bytes32 stakeId = keccak256(abi.encodePacked(staker, amount, daysLock));
-        emit StakeFromClaimCalled(staker, amount, daysLock);
-        return stakeId;
-    }
-
-    function stake(uint128, uint16) external override returns (bytes32) {
-        revert("Not Implemented");
-    }
-    function unstake(bytes32) external override {
-        revert("Not Implemented");
+        IStakingStorage.Stake calldata,
+        uint256,
+        uint256,
+        uint16,
+        uint16
+    ) external pure returns (uint256) {
+        revert("MethodNotSupported");
     }
 }
 
 contract RewardManagerTest is Test {
+    // --- Contracts ---
     RewardManager public rewardManager;
+    PoolManager public poolManager;
+    ClaimsJournal public claimsJournal;
     StrategiesRegistry public strategiesRegistry;
-    RewardBookkeeper public rewardBookkeeper;
-    LeanMockStakingStorage public mockStakingStorage;
-    LeanMockStakingVault public mockStakingVault;
-    MockERC20 public mockRewardToken;
+    MockStakingStorage public mockStakingStorage;
+    MockERC20 public rewardToken;
+    FullStakingStrategy public fullStakingStrategy;
+    MockSimpleStrategy public simpleStrategy;
 
-    address public admin = address(0xA1);
-    address public manager = address(0xB1);
-    address public user1 = address(0xC1);
+    // --- Users ---
+    address public admin = makeAddr("ADMIN");
+    address public manager = makeAddr("MANAGER");
+    address public controller = makeAddr("CONTROLLER");
+    address public user = makeAddr("USER");
 
-    uint32 constant STRATEGY_ID_GRANTED_COMPAT = 0;
-    uint32 constant STRATEGY_ID_IMMEDIATE = 1;
-    uint32 constant STRATEGY_ID_EXCLUSIVE = 2;
+    // --- IDs ---
+    uint32 public constant POOL_ID = 1;
+    uint32 public constant DEPENDENT_STRATEGY_ID = 1;
+    uint32 public constant INDEPENDENT_STRATEGY_ID = 2;
+    bytes32 public stakeId;
 
     function setUp() public {
-        strategiesRegistry = new StrategiesRegistry(admin, manager);
-        rewardBookkeeper = new RewardBookkeeper(admin, manager);
-        mockStakingStorage = new LeanMockStakingStorage();
-        mockStakingVault = new LeanMockStakingVault();
-        mockRewardToken = new MockERC20("RewardToken", "RWT");
+        vm.prank(admin);
+        poolManager = new PoolManager(admin, manager, controller);
 
+        vm.prank(admin);
+        strategiesRegistry = new StrategiesRegistry(admin, manager);
+
+        vm.prank(admin);
+        mockStakingStorage = new MockStakingStorage(admin);
+
+        rewardToken = new MockERC20("Reward Token", "RWD");
+
+        vm.prank(admin);
+        fullStakingStrategy = new FullStakingStrategy(address(rewardToken), 14);
+
+        simpleStrategy = new MockSimpleStrategy(admin, address(rewardToken));
+        assertNotEq(address(simpleStrategy), address(0));
+        assertEq(simpleStrategy.getRewardToken(), address(rewardToken));
+
+        // Deploy RewardManager initially with a placeholder for ClaimsJournal
+        vm.prank(admin);
         rewardManager = new RewardManager(
             admin,
             manager,
             mockStakingStorage,
             strategiesRegistry,
-            rewardBookkeeper,
-            IStakingVault(address(mockStakingVault))
+            ClaimsJournal(address(0)), // Placeholder
+            poolManager
         );
 
-        // Grant necessary roles
-        vm.startPrank(admin);
-        mockStakingVault.grantRole(
-            mockStakingVault.CLAIM_CONTRACT_ROLE(),
-            address(rewardManager)
-        );
-        rewardBookkeeper.grantRole(
-            rewardBookkeeper.CONTROLLER_ROLE(),
-            address(rewardManager)
-        );
-        rewardBookkeeper.grantRole(rewardBookkeeper.MANAGER_ROLE(), manager); // For test setup
-        vm.stopPrank();
-
-        // Mint and approve tokens for the RewardManager contract to spend
-        mockRewardToken.mint(address(rewardManager), 1_000_000 * 10 ** 18);
-    }
-
-    function _registerStrategy(
-        uint32 strategyId,
-        IRewardStrategy.ClaimType claimType,
-        uint8 layer,
-        IRewardStrategy.Policy policy
-    ) internal {
-        if (strategiesRegistry.getStrategyAddress(strategyId) == address(0)) {
-            MockRewardStrategy mockStrategy = new MockRewardStrategy(
-                "Strategy",
-                address(mockRewardToken),
-                layer,
-                policy,
-                claimType
-            );
-            vm.startPrank(manager);
-            strategiesRegistry.registerStrategy(
-                strategyId,
-                address(mockStrategy)
-            );
-            vm.stopPrank();
-        }
-    }
-
-    function test_ClaimGrantedRewards_Success() public {
-        _registerStrategy(
-            STRATEGY_ID_GRANTED_COMPAT,
-            IRewardStrategy.ClaimType.ADMIN_GRANTED,
-            0,
-            IRewardStrategy.Policy.STACKABLE
-        );
-
-        uint256 rewardAmount = 1000 * 10 ** 18;
-
-        // Simulate admin granting a reward
-        vm.startPrank(admin);
-        rewardBookkeeper.grantRole(rewardBookkeeper.CONTROLLER_ROLE(), manager); // Admin grants role to manager
-        vm.stopPrank();
-
-        vm.startPrank(manager); // Now manager, with the correct role, can grant the reward
-        rewardBookkeeper.grantReward(
-            user1,
-            STRATEGY_ID_GRANTED_COMPAT,
-            1,
-            rewardAmount,
-            1
-        ); // Use the registered strategy ID
-        vm.stopPrank();
-
-        // User claims the reward
-        vm.startPrank(user1);
-        uint256 userBalanceBefore = mockRewardToken.balanceOf(user1);
-        rewardManager.claimGrantedRewards();
-        uint256 userBalanceAfter = mockRewardToken.balanceOf(user1);
-        vm.stopPrank();
-
-        assertEq(userBalanceAfter - userBalanceBefore, rewardAmount);
-    }
-
-    function _generateStakeId(
-        address staker,
-        uint32 counter
-    ) internal pure returns (bytes32) {
-        return bytes32((uint256(uint160(staker)) << 96) | counter);
-    }
-
-    function test_ClaimImmediateReward_Success() public {
-        _registerStrategy(
-            STRATEGY_ID_IMMEDIATE,
-            IRewardStrategy.ClaimType.USER_CLAIMABLE,
-            0,
-            IRewardStrategy.Policy.STACKABLE
-        );
-
-        // Fund the strategy
-        uint256 depositAmount = 5000 * 10 ** 18;
-        mockRewardToken.mint(manager, depositAmount);
-        vm.startPrank(manager);
-        mockRewardToken.approve(address(rewardManager), depositAmount);
-        rewardManager.depositForStrategy(STRATEGY_ID_IMMEDIATE, depositAmount);
-        vm.stopPrank();
-
-        bytes32 stakeId = _generateStakeId(user1, 0);
-        mockStakingStorage.mockStake(stakeId, user1, 100, 1);
-
-        vm.warp(10 days);
-
-        // Claim reward
-        vm.startPrank(user1);
-        uint256 balanceBefore = mockRewardToken.balanceOf(user1);
-        uint256 claimedAmount = rewardManager.claimImmediateReward(
-            STRATEGY_ID_IMMEDIATE,
-            stakeId
-        );
-        uint256 balanceAfter = mockRewardToken.balanceOf(user1);
-        vm.stopPrank();
-
-        assertTrue(claimedAmount > 0);
-        assertEq(balanceAfter - balanceBefore, claimedAmount);
         assertEq(
-            rewardManager.lastClaimDay(stakeId, STRATEGY_ID_IMMEDIATE),
-            10
+            rewardManager.hasRole(keccak256("MANAGER_ROLE"), manager),
+            true,
+            "Manager role not granted to manager"
+        );
+
+        // Now deploy ClaimsJournal with the real RewardManager address
+        vm.prank(admin);
+        claimsJournal = new ClaimsJournal(admin, address(rewardManager));
+
+        // Finally, set the real ClaimsJournal in RewardManager
+        vm.prank(admin);
+        rewardManager.setClaimsJournal(claimsJournal);
+
+        // Grant CONTROLLER_ROLE to the test contract for mocking stakes
+        vm.prank(admin);
+        mockStakingStorage.grantRole(
+            keccak256("CONTROLLER_ROLE"),
+            address(this)
+        );
+
+        // Grant REWARD_MANAGER_ROLE to the RewardManager contract in ClaimsJournal
+        vm.prank(admin);
+        claimsJournal.grantRole(
+            keccak256("MANAGER_ROLE"),
+            address(rewardManager)
+        );
+
+        // --- Initial State Setup ---
+        vm.startPrank(manager);
+        // Register strategies
+        strategiesRegistry.registerStrategy(
+            DEPENDENT_STRATEGY_ID,
+            address(fullStakingStrategy)
+        );
+        strategiesRegistry.registerStrategy(
+            INDEPENDENT_STRATEGY_ID,
+            address(simpleStrategy)
+        );
+
+        assertEq(
+            strategiesRegistry.getStrategyAddress(DEPENDENT_STRATEGY_ID),
+            address(fullStakingStrategy)
+        );
+        assertEq(
+            strategiesRegistry.getStrategyAddress(INDEPENDENT_STRATEGY_ID),
+            address(simpleStrategy)
+        );
+
+        // Create a pool (e.g., from day 10 to day 100)
+        vm.warp(10 days); // Set current time to day 10
+        poolManager.upsertPool(POOL_ID, 11, 100, 0);
+
+        // Assign strategies to pool layers
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            DEPENDENT_STRATEGY_ID,
+            PoolManager.StrategyExclusivity.NORMAL
+        );
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            1,
+            INDEPENDENT_STRATEGY_ID,
+            PoolManager.StrategyExclusivity.NORMAL
+        );
+
+        // Fund the strategies
+        rewardToken.mint(manager, 2_000_000 ether);
+        rewardToken.approve(address(rewardManager), 2_000_000 ether);
+        vm.stopPrank();
+
+        vm.startPrank(manager);
+        rewardManager.fundStrategy(DEPENDENT_STRATEGY_ID, 1_000_000 ether);
+
+        rewardManager.fundStrategy(INDEPENDENT_STRATEGY_ID, 1_000_000 ether);
+
+        // Create a stake for the user, starting on day 10
+        vm.stopPrank();
+        vm.prank(address(this));
+        stakeId = mockStakingStorage.createStake(user, 1000 ether, 10, 0);
+    }
+
+    function test_ClaimReward_Success_DependentStrategy() public {
+        // --- Setup ---
+        vm.warp(101 days);
+        vm.prank(controller);
+        poolManager.setPoolTotalStakeWeight(POOL_ID, 2000 * 1e18);
+
+        // --- Action ---
+        vm.prank(user);
+        rewardManager.claimReward(stakeId, POOL_ID, DEPENDENT_STRATEGY_ID);
+
+        // --- Assertions ---
+        assertEq(rewardToken.balanceOf(user), (1_000_000 * 1e18) / 2);
+        assertEq(
+            claimsJournal.getLastClaimDay(stakeId, DEPENDENT_STRATEGY_ID),
+            101
         );
     }
 
-    function test_ClaimImmediateAndRestake_Success() public {
-        _registerStrategy(
-            STRATEGY_ID_IMMEDIATE,
-            IRewardStrategy.ClaimType.USER_CLAIMABLE,
+    function test_ClaimReward_Fail_IfAlreadyClaimed_DependentStrategy() public {
+        // --- Setup ---
+        vm.warp(101 days);
+        vm.prank(controller);
+        poolManager.setPoolTotalStakeWeight(POOL_ID, 1000 * 1e18);
+
+        // First claim
+        vm.prank(user);
+        rewardManager.claimReward(stakeId, POOL_ID, DEPENDENT_STRATEGY_ID);
+        assertEq(rewardToken.balanceOf(user), 1_000_000 * 1e18);
+
+        // --- Action ---
+        vm.expectRevert("Reward already claimed");
+        vm.prank(user);
+        rewardManager.claimReward(stakeId, POOL_ID, DEPENDENT_STRATEGY_ID);
+    }
+
+    function test_ClaimReward_Success_IndependentStrategy() public {
+        // --- Setup ---
+        vm.warp(20 days); // 10 days after stake started
+
+        // --- Action ---
+        vm.prank(user);
+        rewardManager.claimReward(stakeId, POOL_ID, INDEPENDENT_STRATEGY_ID);
+
+        // --- Assertions ---
+        uint256 expectedReward = uint256(1000 ether * 10_000 * 10) /
+            (100_000 * 365);
+        assertApproxEqAbs(rewardToken.balanceOf(user), expectedReward, 1e15);
+        assertEq(
+            claimsJournal.getLastClaimDay(stakeId, INDEPENDENT_STRATEGY_ID),
+            20
+        );
+    }
+
+    function test_ClaimReward_Fail_IfExclusiveClaimedOnLayer() public {
+        // --- Setup ---
+        vm.prank(manager);
+        poolManager.assignStrategyToPool(
+            POOL_ID,
             0,
-            IRewardStrategy.Policy.STACKABLE
+            DEPENDENT_STRATEGY_ID,
+            PoolManager.StrategyExclusivity.EXCLUSIVE
         );
 
-        uint256 depositAmount = 5000 * 10 ** 18;
-        mockRewardToken.mint(address(rewardManager), depositAmount); // Fund manager directly
-
-        bytes32 stakeId = _generateStakeId(user1, 0);
-        mockStakingStorage.mockStake(stakeId, user1, 100, 1);
-
-        vm.warp(10 days);
-
-        MockRewardStrategy mockStrategy = MockRewardStrategy(
-            strategiesRegistry.getStrategyAddress(STRATEGY_ID_IMMEDIATE)
+        vm.prank(manager);
+        // Assign another strategy to the same layer to test exclusivity
+        poolManager.assignStrategyToPool(
+            POOL_ID,
+            0,
+            INDEPENDENT_STRATEGY_ID,
+            PoolManager.StrategyExclusivity.NORMAL
         );
-        uint256 expectedReward = 1000 * 10 ** 18;
-        mockStrategy.setMockCalculatedReward(expectedReward);
 
-        vm.startPrank(user1);
-        vm.expectEmit(true, true, true, true);
-        emit LeanMockStakingVault.StakeFromClaimCalled(
-            user1,
-            uint128(expectedReward),
-            30
-        );
-        rewardManager.claimImmediateAndRestake(
-            STRATEGY_ID_IMMEDIATE,
-            stakeId,
-            30
-        );
-        vm.stopPrank();
+        // User claims the exclusive reward
+        vm.warp(101 days);
+        vm.prank(controller);
+        poolManager.setPoolTotalStakeWeight(POOL_ID, 1000 * 1e18);
+        vm.prank(user);
+        rewardManager.claimReward(stakeId, POOL_ID, DEPENDENT_STRATEGY_ID);
 
-        assertEq(mockStakingVault.lastStaker(), user1);
-        assertEq(mockStakingVault.lastAmount(), expectedReward);
-        assertEq(mockStakingVault.lastDaysLock(), 30);
+        // --- Action ---
+        vm.expectRevert(bytes("Layer locked by exclusive claim"));
+        vm.prank(user);
+        rewardManager.claimReward(stakeId, POOL_ID, INDEPENDENT_STRATEGY_ID);
     }
 }

@@ -203,7 +203,6 @@ contract StakingVault is
         IERC20 token_,
         uint256 amount
     ) external onlyRole(MULTISIG_ROLE) {
-        require(token_ != token, CannotRecoverStakingToken());
         token_.safeTransfer(msg.sender, amount);
         emit EmergencyRecover(address(token_), msg.sender, amount);
     }
