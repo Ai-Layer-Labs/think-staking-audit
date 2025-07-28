@@ -2,27 +2,41 @@
 
 ## Overview
 
-The THINK ecosystem features a comprehensive rewards system that works seamlessly with the staking mechanism to provide sophisticated earning opportunities for token holders. The system is designed to be flexible, supporting different types of reward strategies.
+The THINK ecosystem features a comprehensive rewards system that works with the staking mechanism to provide various earning opportunities for token holders. The system is designed to be flexible and transparent, supporting different types of reward strategies through a unified interface.
 
-## Two Ways to Earn Rewards
+## How Rewards Work: Pools, Layers, and Strategies
 
-The system offers two distinct models for earning and claiming rewards.
+The rewards system is built around three core concepts:
 
-### 1. Granted Rewards (Pool-Based)
+1.  **Pools**: A pool represents a reward opportunity for a specific time period. It is defined by a `startDay` and an `endDay`. All reward calculations for strategies within a pool are confined to this period. For example, a "Q3 Bonus Pool" might run from day 90 to day 180.
 
-This model is used for strategies tied to specific time periods, like monthly epochs or quarterly cycles. These are often special, one-time reward pools.
+2.  **Strategies**: A strategy is a contract containing the specific logic for calculating a reward. Each strategy assigned to a pool calculates a particular type of bonus. For example, one strategy might offer a bonus for loyalty, while another gives a bonus for holding a certain amount of tokens.
 
--   **How it Works:** An administrative process calculates rewards for all eligible stakers *after* a reward period (a "Pool") has ended. These calculated amounts are then recorded on-chain in a secure ledger contract (`RewardBookkeeper`).
--   **Claiming:** Once your reward is granted, it appears as a "claimable balance." You can then call the `claimGrantedRewards()` function to receive all your available granted rewards in a single, gas-efficient transaction.
--   **Use Case:** Perfect for distributing a fixed pool of tokens to users based on their participation over a specific period (e.g., a 90-day "Early Staker Bonus" pool).
+3.  **Layers**: Within a single pool, strategies can be organized into "layers". Layers have exclusivity rules that govern how you can claim rewards from them. This allows for creating sophisticated reward structures, such as choosing between one large, exclusive bonus or several smaller, non-exclusive ones.
 
-### 2. Immediate Rewards (APR-Style)
+## Two Types of Reward Strategies
 
-This model is used for dynamic strategies, like those based on a variable Annual Percentage Rate (APR), where rewards accrue continuously based on the number of full days you have staked.
+While the claiming process is unified for the user, the underlying strategies fall into two categories, which affect _when_ a reward can be claimed.
 
--   **How it Works:** There is no pre-calculation. When you decide to claim, the `claimImmediateReward()` function calculates your earnings on-the-fly based on your stake amount and the number of full, completed days since your last claim for that strategy.
--   **Claiming:** You can call `claimImmediateReward()` at any time to calculate and receive your accrued rewards. You can also use `claimImmediateAndRestake()` to compound your earnings back into a new stake.
--   **Use Case:** Ideal for flexible, APR-style rewards that are not tied to a fixed pool or epoch.
+### 1. Pool Size Independent Strategies
+
+These are rewards that can be calculated at any time based on your personal staking data and fixed parameters (like an APR).
+
+- **How it Works**: The reward calculation does not depend on the actions of other stakers in the pool. The rules are self-contained. For example, a "5% APR" strategy calculates your reward based solely on your stake's duration within the pool's timeframe.
+- **Claiming**: You can claim rewards from these strategies **at any time** after the pool starts. The system tracks your `lastClaimDay` to calculate rewards accrued since your previous claim.
+- **Use Case**: Perfect for simple, continuous APR-style rewards.
+
+### 2. Pool Size Dependent Strategies
+
+These are rewards where your share is determined by your stake's weight relative to the _total weight of all participants_ in the pool.
+
+- **How it Works**: Your final reward can only be calculated _after_ the pool has ended. This is because the system needs to know the `totalStakeWeight` from all eligible participants to determine your proportional share of a fixed reward pot. This total weight is calculated and set by a trusted off-chain service after the pool concludes.
+- **Claiming**: You can only claim rewards from these strategies **after the pool has ended** and been finalized. Any attempt to claim before that will fail. Since it's a one-time claim of a final share, you can only claim it once.
+- **Use Case**: Ideal for distributing a fixed number of tokens among all active participants in an epoch or promotional event.
+
+## Unified Claiming Process
+
+Regardless of the strategy type, all rewards are claimed through a single function: `claimReward(poolId, strategyId, ...)`. The `RewardManager` contract handles all the complexity, automatically checking the pool's status, the strategy's type, and your eligibility before calculating and paying out the reward.
 
 ## How Staking Data Powers Rewards
 
@@ -31,9 +45,10 @@ The reward system is built directly on top of the staking system's data.
 #### Day-Based Calculations
 
 The core of the system's fairness comes from its use of **days** as the unit for all calculations.
--   When you stake, the system records the `stakeDay`.
--   All reward calculations, for both Granted and Immediate rewards, are based on the number of full days your stake has been active.
--   This ensures that rewards are predictable and not affected by the specific time of day you stake or claim.
+
+- When you stake, the system records the `stakeDay`.
+- All reward calculations are based on the number of full days your stake has been active within a pool's period.
+- This ensures that rewards are predictable and not affected by the specific time of day you stake or claim.
 
 #### Checkpoints
 
@@ -41,4 +56,4 @@ The staking system uses automatic "snapshots" called checkpoints every time you 
 
 ## Getting Started
 
-To begin earning rewards, simply stake your tokens. Your active stakes will automatically be eligible for any reward strategies that are running. Monitor the project's official announcements to learn about new reward pools and strategies as they become available.
+To begin earning rewards, simply stake your tokens. Your active stakes will automatically be eligible for any reward strategies that are running. Monitor the project's official announcements to learn about reward pools and strategies as they become available.

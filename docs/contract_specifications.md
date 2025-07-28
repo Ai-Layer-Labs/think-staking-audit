@@ -1,34 +1,114 @@
 # Token Staking System: Contract Specifications
 
-This document provides comprehensive technical specifications for the Token staking system contracts, including all functions, events, errors, and data structures.
+This document provides technical specifications for the staking system contracts, including functions, events, errors, and data structures.
 
-## RewardManager.sol
+## Reward System Contracts
 
-### State Variables
+### IRewardStrategy.sol
 
-- `MANAGER_ROLE`: `bytes32` - Role for pausing/unpausing the contract and funding strategies.
-- `stakingStorage`: `IStakingStorage` - Immutable reference to the storage contract.
-- `strategiesRegistry`: `StrategiesRegistry` - Immutable reference to the strategy registry.
-- `rewardBookkeeper`: `RewardBookkeeper` - Immutable reference to the ledger for granted rewards.
-- `stakingVault`: `IStakingVault` - Immutable reference to the staking vault for restaking.
-- `strategyBalances`: `mapping(bytes32 => uint256)` - Balances for `PRE_FUNDED` immediate strategies.
-- `lastClaimDay`: `mapping(bytes32 => mapping(bytes32 => uint256))` - Tracks the last claim day for a user's stake and a specific immediate strategy.
-- `exclusiveClaimDay`: `mapping(bytes32 => mapping(uint8 => uint256))` - Tracks the last claim day for a user's stake within an exclusive reward layer.
+This interface defines the standard for all reward calculation strategy contracts.
 
-### Functions
+#### Enums
 
-- `depositForStrategy(uint16 _strategyId, uint256 _amount)`: Deposits funds for a `PRE_FUNDED` immediate strategy. Access: `MANAGER_ROLE`.
-- `claimImmediateReward(uint16 _strategyId, bytes32 _stakeId) returns (uint256)`: Claims rewards for a `USER_CLAIMABLE` (immediate) strategy.
-- `claimGrantedRewards()`: Claims all available rewards from `ADMIN_GRANTED` (pool-based) strategies that have been recorded in the `RewardBookkeeper`.
-- `claimImmediateAndRestake(uint16 _strategyId, bytes32 _stakeId, uint16 _daysLock)`: Claims rewards from an immediate strategy and restakes them in a single transaction.
-- `pause()`: Pauses the contract. Access: `MANAGER_ROLE`.
-- `unpause()`: Unpauses the contract. Access: `MANAGER_ROLE`.
+- **`StrategyType`**:
+  - `POOL_SIZE_INDEPENDENT`: Strategy whose reward can be calculated at any time.
+  - `POOL_SIZE_DEPENDENT`: Strategy that requires pool-wide data (like `totalStakeWeight`) available only after the pool ends.
 
-### Events
+#### Functions
 
-- `ImmediateRewardClaimed(address indexed user, bytes32 indexed strategyId, bytes32 indexed stakeId, uint256 amount, uint256 fromDay, uint256 toDay)`
-- `GrantedRewardsClaimed(address indexed user, uint256 totalAmount, uint256 rewardCount)`
-- `StrategyFunded(bytes32 indexed strategyId, uint256 amount)`
+- `getStrategyType() external view returns (StrategyType)`: Returns the type of the strategy.
+- `calculateReward(address user, IStakingStorage.Stake calldata stake, uint256 lastClaimDay, uint16 poolStartDay, uint16 poolEndDay) external view returns (uint256)`: Calculates reward for `POOL_SIZE_INDEPENDENT` strategies.
+- `calculateReward(address user, IStakingStorage.Stake calldata stake, uint128 totalPoolWeight, uint256 totalRewardAmount, uint16 poolStartDay, uint16 poolEndDay) external view returns (uint256)`: Calculates reward for `POOL_SIZE_DEPENDENT` strategies.
+
+---
+
+### PoolManager.sol
+
+Manages the scheduling and configuration of reward pools.
+
+#### State Variables
+
+- `pools`: `mapping(uint256 => Pool)`: Stores all pool configurations.
+- `poolStrategies`: `mapping(uint256 => mapping(uint8 => uint32[]))`: Maps pool ID and layer ID to an array of strategy IDs.
+- `strategyExclusivity`: `mapping(uint32 => StrategyExclusivity)`: Stores the exclusivity type for a strategy within a pool context.
+- `nextPoolId`: `uint256`: Counter for auto-incrementing pool IDs.
+
+#### Data Structures
+
+- `struct Pool { uint16 startDay; uint16 endDay; uint128 totalStakeWeight; uint256 parentPoolId; }`
+- `enum StrategyExclusivity { NORMAL, EXCLUSIVE, SEMI_EXCLUSIVE }`
+
+#### Functions
+
+- `upsertPool(uint256 _poolId, uint16 _startDay, uint16 _endDay, uint256 _parentPoolId) external returns (uint256 poolId)`: Creates a new pool or updates an existing one. Can only be called before the pool starts. Access: `MANAGER_ROLE`.
+- `assignStrategyToPool(uint256 _poolId, uint8 _layerId, uint32 _strategyId, StrategyExclusivity _exclusivity)`: Assigns a strategy to a specific layer within a pool. Can only be done before the pool starts. Access: `MANAGER_ROLE`.
+- `setPoolTotalStakeWeight(uint256 _poolId, uint128 _totalStakeWeight)`: Sets the final total stake weight for a pool. Can only be called after the pool has ended. Access: `CONTROLLER_ROLE`.
+- `getPool(uint256 _poolId) external view returns (Pool memory)`: Returns the configuration for a specific pool.
+- `getPoolsByDateRange(uint16 _fromDay, uint16 _toDay) external view returns (Pool[] memory, uint256[] memory)`: Returns all pools that are active within a given date range.
+
+#### Events
+
+- `PoolUpserted(uint256 indexed poolId, uint16 startDay, uint16 endDay)`
+- `StrategyAssigned(uint256 indexed poolId, uint8 indexed layerId, uint32 indexed strategyId, StrategyExclusivity exclusivity)`
+- `PoolWeightSet(uint256 indexed poolId, uint128 totalStakeWeight)`
+
+---
+
+### ClaimsJournal.sol
+
+Acts as the ledger for all user claims.
+
+#### State Variables
+
+- `directStrategyClaims`: `mapping(bytes32 => mapping(uint32 => uint256))`: Stake ID -> Strategy ID -> Last Claim Day.
+- `layerClaimState`: `mapping(address => mapping(uint256 => mapping(uint8 => LayerClaimType)))`: User -> Pool ID -> Layer ID -> Claim Type.
+
+#### Enums
+
+- `LayerClaimType { NONE, NORMAL, EXCLUSIVE, SEMI_EXCLUSIVE }`
+
+#### Functions
+
+- `recordClaim(address _user, uint32 _poolId, uint8 _layerId, uint32 _strategyId, bytes32 _stakeId, LayerClaimType _claimType, uint256 _claimDay)`: Records a claim in the journal. Access: `REWARD_MANAGER_ROLE`.
+- `getLastClaimDay(bytes32 _stakeId, uint32 _strategyId) external view returns (uint256)`: Returns the last day a claim was made for a specific stake and strategy.
+- `getLayerClaimState(address _user, uint256 _poolId, uint8 _layerId) external view returns (LayerClaimType)`: Returns the claim state for a user on a specific pool layer.
+
+#### Events
+
+- `DirectClaimRecorded(bytes32 indexed stakeId, uint32 indexed strategyId, uint256 claimDay)`
+- `LayerStateUpdated(address indexed user, uint256 indexed poolId, uint8 indexed layerId, LayerClaimType claimType)`
+
+---
+
+### RewardManager.sol
+
+The central orchestrator for reward claims.
+
+#### State Variables
+
+- `stakingStorage`: `IStakingStorage`
+- `strategiesRegistry`: `IStrategiesRegistry`
+- `claimsJournal`: `IClaimsJournal`
+- `poolManager`: `IPoolManager`
+- `strategyBalances`: `mapping(uint32 => uint256)`: Stores the funds available for each strategy.
+- `rewardToken`: `IERC20`: The token used for rewards.
+
+#### Functions
+
+- `fundStrategy(uint32 _strategyId, uint256 _amount)`: Deposits funds for a specific strategy. Access: `MANAGER_ROLE`.
+- `claimReward(uint32 _poolId, uint32 _strategyId, bytes32 _stakeId)`: The primary function for users to claim their reward from a specific strategy in a pool.
+- `getClaimableReward(uint32 _poolId, uint32 _strategyId, bytes32 _stakeId) external view returns (uint256)`: A view function to check the pending reward amount without executing a claim.
+
+#### Events
+
+- `RewardClaimed(address indexed user, uint32 indexed poolId, uint32 indexed strategyId, bytes32 stakeId, uint256 amount)`
+- `StrategyFunded(uint32 indexed strategyId, uint256 amount)`
+
+---
+
+## Core Staking Contracts
+
+_(Sections for StakingVault.sol and StakingStorage.sol remain unchanged as their external API is stable)_
 
 ---
 

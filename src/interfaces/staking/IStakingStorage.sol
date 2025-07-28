@@ -21,8 +21,8 @@ interface IStakingStorage {
 
     struct StakerInfo {
         uint128 totalStaked;
-        uint128 totalRewarded;
-        uint128 totalClaimed;
+        uint128 totalRewarded; // TODO: remove?
+        uint128 totalClaimed; // TODO: remove?
         uint16 stakesCounter;
         uint16 activeStakesNumber;
         uint16 lastCheckpointDay;

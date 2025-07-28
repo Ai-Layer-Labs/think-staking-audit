@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.30;
+pragma solidity ^0.8.30;
 
 import "../../interfaces/reward/IRewardStrategy.sol";
 import "../../interfaces/staking/IStakingStorage.sol";
@@ -7,60 +7,70 @@ import "../../interfaces/staking/IStakingStorage.sol";
 /**
  * @title FullStakingStrategy
  * @author @Tudmotu
- * @notice A strategy for a special bonus for early, long-term stakers.
- * @dev This is an ADMIN_GRANTED strategy. It checks for eligibility based on stake timing.
+ * @notice A strategy that rewards stakers who keep their stake for the entire duration of a parent pool.
+ * @dev This is an ADMIN_GRANTED strategy. It returns the stake amount as the weight for final calculation.
  */
 contract FullStakingStrategy is IRewardStrategy {
     address public immutable rewardToken;
-    uint16 public immutable gracePeriodInDays;
+    uint16 public immutable gracePeriod; // Grace period in days.
 
-    constructor(address _rewardToken, uint16 _gracePeriodInDays) {
+    error MethodNotSupported();
+
+    constructor(address _rewardToken, uint16 _gracePeriod) {
         rewardToken = _rewardToken;
-        gracePeriodInDays = _gracePeriodInDays;
+        gracePeriod = _gracePeriod;
     }
 
-    function getParameters()
-        external
-        view
-        override
-        returns (
-            string memory name,
-            address _rewardToken,
-            uint8 rewardLayer,
-            Policy stackingPolicy,
-            ClaimType claimType
-        )
-    {
-        return (
-            "Full Staking Bonus Strategy",
-            rewardToken,
-            1, // Bonus Layer
-            Policy.STACKABLE,
-            ClaimType.ADMIN_GRANTED
-        );
+    function getName() external pure override returns (string memory) {
+        return "Full Staking Strategy";
+    }
+
+    function getRewardToken() external view override returns (address) {
+        return rewardToken;
+    }
+
+    function getRewardLayer() external pure override returns (uint8) {
+        return 0; // Base Layer
+    }
+
+    function getStrategyType() external pure override returns (StrategyType) {
+        return StrategyType.POOL_SIZE_DEPENDENT;
     }
 
     function calculateReward(
-        address user,
-        IStakingStorage.Stake memory stake,
-        uint256 startDay, // Corresponds to the parent pool's startDay
-        uint256 endDay // Corresponds to the parent pool's endDay
-    ) external view override returns (uint256) {
-        // This function is used to determine a user's eligibility and their weight.
-        // The final reward is calculated in the RewardManager.
-
-        // Condition 1: Stake must have started within the grace period.
-        bool startedEarly = stake.stakeDay < (startDay + gracePeriodInDays);
-
-        // Condition 2: Stake must not have been withdrawn before or on the end day of the pool.
-        bool heldUntilEnd = stake.unstakeDay == 0 || stake.unstakeDay >= endDay;
-
-        if (startedEarly && heldUntilEnd) {
-            // If eligible, the user's weight is simply their stake amount.
-            // The time-weighting is handled by the StandardStakingStrategy for the cyclical rewards.
-            return stake.amount;
+        address, // user
+        IStakingStorage.Stake calldata stake,
+        uint256 totalPoolWeight,
+        uint256 totalRewardAmount,
+        uint16 poolStartDay,
+        uint16 poolEndDay
+    ) external view returns (uint256) {
+        if (totalPoolWeight == 0) {
+            return 0;
         }
 
-        return 0; // Not eligible for the bonus.
+        // Eligibility check:
+        // 1. Staked within grace period.
+        // 2. Held until (or past) the pool end day.
+        bool isEligible = stake.stakeDay <= (poolStartDay + gracePeriod) &&
+            (stake.unstakeDay == 0 || stake.unstakeDay >= poolEndDay);
+
+        if (!isEligible) {
+            return 0;
+        }
+
+        uint256 userWeight = stake.amount;
+
+        return (userWeight * totalRewardAmount) / totalPoolWeight;
+    }
+
+    function calculateReward(
+        address, // user
+        IStakingStorage.Stake calldata, // stake
+        uint16, // lastClaimDay
+        uint16, // poolStartDay
+        uint16 // poolEndDay
+    ) external pure returns (uint256) {
+        revert("MethodNotSupported");
     }
 }

@@ -269,23 +269,23 @@ cast interface path/to/Contract.sol
 
 ```bash
 # Run specific test file
-forge test --match-path tests/unit/RewardBookkeeper.t.sol
+forge test --match-path tests/unit/RewardManager.t.sol
 
 # Run tests for specific contract
-forge test --match-contract RewardBookkeeperTest
+forge test --match-contract RewardManagerTest
 
 # Run with gas reporting
 forge test --gas-report
 ```
 
-## Example Workflow: Adding RewardBookkeeper Tests
+## Example Workflow: Adding PoolManager Tests
 
 ### Step 1: Identify Gap
 
 ```
-Matrix shows: RewardBookkeeper.getUserClaimableAmount() → (none)
-Forge shows: RewardBookkeeper 67% coverage
-Gap: Need test for getUserClaimableAmount()
+Matrix shows: PoolManager.getPoolsByDateRange() → (none)
+Forge shows: PoolManager 75% coverage
+Gap: Need test for getPoolsByDateRange()
 ```
 
 ### Step 2: Create Test Case
@@ -293,12 +293,11 @@ Gap: Need test for getUserClaimableAmount()
 Add to `test_cases.md`:
 
 ```markdown
-### TC_GRS05: User Claimable Amount Calculation (UC26)
+### TC_R11: Query Pools by Date Range
 
-- Test with no rewards
-- Test with all rewards claimed
-- Test with mixed claimed/unclaimed
-- Test accurate amount calculation
+- Test with a date range that includes multiple pools
+- Test with a date range that includes no pools
+- Test boundary conditions (start/end days matching the range)
 ```
 
 ### Step 3: Update Matrix
@@ -306,18 +305,18 @@ Add to `test_cases.md`:
 Update `test_coverage_matrix.md`:
 
 ```markdown
-| RewardBookkeeper | `getUserClaimableAmount()` | TC_GRS05 |
+| PoolManager | `getPoolsByDateRange(...)` | TC_R11 |
 ```
 
 ### Step 4: Implement Test
 
-Create `tests/unit/RewardBookkeeper.t.sol` with TC_GRS05 implementation.
+Create or update `tests/unit/PoolManager.t.sol` with TC_R11 implementation.
 
 ### Step 5: Validate
 
 ```bash
-forge coverage --match-contract RewardBookkeeper
-# Verify coverage improved from 67% to higher percentage
+forge coverage --match-contract PoolManager
+# Verify coverage improved from 75% to higher percentage
 ```
 
 ## Success Metrics

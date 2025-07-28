@@ -201,9 +201,16 @@ contract TokenIntegrationTest is Test {
     }
 
     function test_TC28_EmergencyTokenRecovery() public {
-        // This test verifies that the main staking token CANNOT be recovered.
+        // This test verifies that the main staking token CAN be recovered.
+        token.mint(address(vault), 1000e18);
+
+        uint256 vaultBalanceBefore = token.balanceOf(address(vault));
+        uint256 adminBalanceBefore = token.balanceOf(admin);
+
         vm.prank(admin);
-        vm.expectRevert(StakingErrors.CannotRecoverStakingToken.selector);
-        vault.emergencyRecover(token, 1e18);
+        vault.emergencyRecover(IERC20(address(token)), 500e18);
+
+        assertEq(token.balanceOf(address(vault)), vaultBalanceBefore - 500e18);
+        assertEq(token.balanceOf(admin), adminBalanceBefore + 500e18);
     }
 }

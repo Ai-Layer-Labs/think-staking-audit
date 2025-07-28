@@ -1,166 +1,328 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.30;
+pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
-import "../interfaces/reward/IEnums.sol";
-import "../interfaces/reward/RewardErrors.sol";
+import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
-/**
- * @title PoolManager
- * @author @Tudmotu
- * @notice Manages the lifecycle and hierarchy of all reward pools (epochs).
- * @dev This contract is the single source of truth for reward period definitions and state.
- */
-contract PoolManager is IEnums, AccessControl {
+contract PoolManager is AccessControl {
+    using EnumerableSet for EnumerableSet.UintSet;
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+    bytes32 public constant CONTROLLER_ROLE = keccak256("CONTROLLER_ROLE");
+
+    enum StrategyExclusivity {
+        NORMAL, // can be combined with any other
+        EXCLUSIVE, // excludes all other on the layer
+        SEMI_EXCLUSIVE // excludes only other SEMI_EXCLUSIVE and EXCLUSIVE
+    }
 
     struct Pool {
-        uint32 id;
         uint16 startDay;
         uint16 endDay;
-        uint32 strategyId;
-        uint32 parentId;
+        uint256 totalPoolWeight;
+        uint256 parentPoolId;
     }
 
-    mapping(uint32 => Pool) public pools;
-    mapping(uint32 => PoolState) public poolState;
-    mapping(uint32 => uint256) public poolTotalStakeWeight;
-    mapping(uint32 => uint256) public poolLiveStakeWeight;
+    uint256 public nextPoolId;
 
-    uint32 public nextPoolId = 1;
+    mapping(uint256 poolId => Pool) public pools;
+    // poolLiveWeight is used to calculate the preliminary rewards for the pool
+    mapping(uint256 poolId => uint256) public poolLiveWeight;
+    mapping(uint256 poolId => mapping(uint8 layer => uint32[] strategies))
+        public poolLayerStrategies;
+
+    mapping(uint32 strategyId => StrategyExclusivity) public exclusivity;
+    mapping(uint256 poolId => EnumerableSet.UintSet) internal _poolLayers;
+
+    // Cache for quick search of strategy layer
+    mapping(uint256 poolId => mapping(uint32 strategyId => uint8))
+        public strategyLayer;
 
     event PoolUpserted(
-        uint32 indexed poolId,
+        uint256 indexed poolId,
         uint16 startDay,
         uint16 endDay,
-        uint32 indexed parentId,
-        uint32 indexed strategyId
+        uint256 totalPoolWeight,
+        uint256 indexed parentPoolId
     );
-    event PoolStateChanged(uint32 indexed poolId, PoolState newState);
-    event PoolFinalized(uint32 indexed poolId, uint256 totalStakeWeight);
-    event PoolLiveStakeWeightUpdated(
-        uint32 indexed poolId,
-        uint256 liveStakeWeight
+    event StrategyAddedToLayer(uint32 poolId, uint8 layer, uint32 strategyId);
+    event StrategyRemovedFromLayer(
+        uint256 indexed poolId,
+        uint8 layer,
+        uint32 strategyId
     );
 
-    constructor(address _admin, address _manager) {
-        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
-        _grantRole(MANAGER_ROLE, _manager);
+    error PoolAlreadyStarted();
+    error PoolNotEnded();
+    error PoolAlreadyCalculated();
+    error InvalidDates();
+    error ParentPoolIsSelf();
+
+    constructor(address admin, address manager, address controller) {
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(MANAGER_ROLE, manager);
+        _grantRole(CONTROLLER_ROLE, controller);
+        nextPoolId = 1;
     }
+
+    /** ------------------------------------------------
+     *  ! Pool Management
+     * ------------------------------------------------ */
 
     function upsertPool(
-        uint32 _poolId,
+        uint256 _poolId,
         uint16 _startDay,
         uint16 _endDay,
-        uint32 _parentId,
-        uint32 _strategyId
-    ) external onlyRole(MANAGER_ROLE) returns (uint32) {
-        require(_startDay < _endDay, RewardErrors.InvalidPoolDates());
-        if (_parentId != 0) {
-            require(
-                pools[_parentId].id != 0,
-                RewardErrors.PoolDoesNotExist(_parentId)
-            );
-        }
-        require(
-            _strategyId != 0,
-            RewardErrors.StrategyNotRegistered(_strategyId)
-        );
+        uint256 _parentPoolId
+    ) external onlyRole(MANAGER_ROLE) returns (uint256 poolId) {
+        poolId = _poolId == 0 ? nextPoolId++ : _poolId;
 
-        uint32 poolIdToUpdate = _poolId == 0 ? nextPoolId : _poolId;
-        require(
-            poolState[poolIdToUpdate] == PoolState.UNINITIALIZED ||
-                poolState[poolIdToUpdate] == PoolState.ANNOUNCED,
-            RewardErrors.PoolAlreadyActiveOrFinalized(poolIdToUpdate)
-        );
+        require(_parentPoolId != poolId, ParentPoolIsSelf());
+        require(_startDay < _endDay, InvalidDates());
+        require(!_isStarted(poolId), PoolAlreadyStarted());
 
-        pools[poolIdToUpdate] = Pool({
-            id: poolIdToUpdate,
-            startDay: _startDay,
-            endDay: _endDay,
-            parentId: _parentId,
-            strategyId: _strategyId
-        });
+        Pool storage p = pools[poolId];
+        p.startDay = _startDay;
+        p.endDay = _endDay;
+        p.parentPoolId = _parentPoolId;
 
-        if (poolState[poolIdToUpdate] == PoolState.UNINITIALIZED) {
-            poolState[poolIdToUpdate] = PoolState.ANNOUNCED;
-        }
+        emit PoolUpserted(poolId, p.startDay, p.endDay, 0, p.parentPoolId);
+    }
 
-        if (_poolId == 0) {
-            nextPoolId++;
-        }
+    function setPoolTotalStakeWeight(
+        uint256 poolId,
+        uint256 totalPoolWeight
+    ) external onlyRole(CONTROLLER_ROLE) {
+        if (!_isEnded(poolId)) revert PoolNotEnded();
+        if (_isCalculated(poolId)) revert PoolAlreadyCalculated();
 
+        Pool storage p = pools[poolId];
+
+        p.totalPoolWeight = totalPoolWeight;
         emit PoolUpserted(
-            poolIdToUpdate,
-            _startDay,
-            _endDay,
-            _parentId,
-            _strategyId
+            poolId,
+            p.startDay,
+            p.endDay,
+            p.totalPoolWeight,
+            p.parentPoolId
         );
-        emit PoolStateChanged(poolIdToUpdate, poolState[poolIdToUpdate]);
-        return poolIdToUpdate;
     }
 
-    function updatePoolState(uint32 _poolId) external {
-        PoolState currentState = poolState[_poolId];
-        require(
-            currentState != PoolState.UNINITIALIZED &&
-                currentState != PoolState.CALCULATED,
-            RewardErrors.PoolNotInitializedOrCalculated(_poolId)
-        );
-
-        uint16 currentDay = uint16(block.timestamp / 1 days);
-        Pool memory pool = pools[_poolId];
-
-        if (
-            currentState == PoolState.ANNOUNCED && currentDay >= pool.startDay
-        ) {
-            poolState[_poolId] = PoolState.ACTIVE;
-            emit PoolStateChanged(_poolId, PoolState.ACTIVE);
-        } else if (
-            currentState == PoolState.ACTIVE && currentDay > pool.endDay
-        ) {
-            poolState[_poolId] = PoolState.ENDED;
-            emit PoolStateChanged(_poolId, PoolState.ENDED);
-        }
-    }
-
-    function updatePoolLiveStakeWeight(
-        uint32 _poolId,
-        uint256 _liveStakeWeight
-    ) external onlyRole(MANAGER_ROLE) {
-        require(
-            poolState[_poolId] < PoolState.CALCULATED,
-            RewardErrors.PoolAlreadyCalculated(_poolId)
-        );
-        poolLiveStakeWeight[_poolId] = _liveStakeWeight;
-        emit PoolLiveStakeWeightUpdated(_poolId, _liveStakeWeight);
+    function setPoolLiveWeight(
+        uint256 poolId,
+        uint256 liveWeight
+    ) external onlyRole(CONTROLLER_ROLE) {
+        poolLiveWeight[poolId] = liveWeight;
     }
 
     /**
-     * @notice Finalizes a pool and locks in the official total stake weight for reward calculations.
-     * @dev This is the point of no return. After this, the total stake weight cannot be changed.
-     * @param _poolId The ID of the pool to finalize.
-     * @param _finalStakeWeight The official, verified total stake weight to be used for all reward calculations.
+     * Assigns a strategy to a pool layer.
+     * @notice The strategy can be assigned even to an active or calculated pool, retroactively
+     * @param poolId The ID of the pool to assign the strategy to.
+     * @param layer The layer to assign the strategy to.
+     * @param strategyId The ID of the strategy to assign.
+     * @param strategyExclusivity The exclusivity of the strategy.
      */
-    function finalizePool(
-        uint32 _poolId,
-        uint256 _finalStakeWeight
+    function assignStrategyToPool(
+        uint256 poolId,
+        uint8 layer,
+        uint32 strategyId,
+        StrategyExclusivity strategyExclusivity
     ) external onlyRole(MANAGER_ROLE) {
-        require(
-            poolState[_poolId] == PoolState.ENDED,
-            RewardErrors.PoolNotEnded(_poolId)
-        );
+        if (_isActive(poolId)) revert PoolAlreadyStarted();
 
-        poolTotalStakeWeight[_poolId] = _finalStakeWeight;
-        poolState[_poolId] = PoolState.CALCULATED;
-
-        emit PoolFinalized(_poolId, _finalStakeWeight);
-        emit PoolStateChanged(_poolId, PoolState.CALCULATED);
+        _poolLayers[poolId].add(layer);
+        poolLayerStrategies[poolId][layer].push(strategyId);
+        exclusivity[strategyId] = strategyExclusivity;
+        strategyLayer[poolId][strategyId] = layer;
     }
 
-    function getPool(uint32 _poolId) external view returns (Pool memory) {
-        require(pools[_poolId].id != 0, RewardErrors.PoolDoesNotExist(_poolId));
-        return pools[_poolId];
+    function removeLayer(
+        uint256 poolId,
+        uint8 layer
+    ) external onlyRole(MANAGER_ROLE) {
+        if (_isActive(poolId)) revert PoolAlreadyStarted();
+        _poolLayers[poolId].remove(layer);
+    }
+
+    function removeStrategyFromPool(
+        uint256 poolId,
+        uint8 layer,
+        uint32 strategyId
+    ) external onlyRole(MANAGER_ROLE) {
+        if (_isActive(poolId)) revert PoolAlreadyStarted();
+
+        delete strategyLayer[poolId][strategyId];
+        delete exclusivity[strategyId];
+
+        uint32[] storage strategies = poolLayerStrategies[poolId][layer];
+        for (uint256 i = 0; i < strategies.length; i++) {
+            if (strategies[i] == strategyId) {
+                strategies[i] = strategies[strategies.length - 1];
+                strategies.pop();
+                break;
+            }
+        }
+        emit StrategyRemovedFromLayer(poolId, layer, strategyId);
+    }
+
+    /** ------------------------------------------------
+     *  ! Getters
+     * ------------------------------------------------ */
+
+    // function isClaimable(
+    //     uint256 poolId,
+    //     uint32 strategyId
+    // ) external view returns (bool canClaim) {
+    //     uint8 layer = strategyLayer[poolId][strategyId];
+    //     StrategyType targetType = strategyTypes[strategyId];
+
+    //     // Check if there are any exclusive or semi-exclusive strategies on the layer
+    //     bool hasExclusive = false;
+    //     bool hasSemiExclusive = false;
+    //     bool hasTargetStrategy = false;
+
+    //     for (uint256 i = 0; i < activeStrategiesOnLayer.length; i++) {
+    //         uint256 activeStrategyId = activeStrategiesOnLayer[i];
+    //         StrategyType activeType = strategyTypes[activeStrategyId];
+
+    //         if (activeStrategyId == strategyId) {
+    //             hasTargetStrategy = true;
+    //             continue;
+    //         }
+
+    //         if (activeType == StrategyType.EXCLUSIVE) {
+    //             hasExclusive = true;
+    //         } else if (activeType == StrategyType.SEMI_EXCLUSIVE) {
+    //             hasSemiExclusive = true;
+    //         }
+    //     }
+
+    //     // Validation logic
+    //     if (targetType == StrategyType.NORMAL) {
+    //         // NORMAL can only work if there is no EXCLUSIVE
+    //         return !hasExclusive && hasTargetStrategy;
+    //     }
+
+    //     if (targetType == StrategyType.EXCLUSIVE) {
+    //         // EXCLUSIVE can only work if it is the only active strategy on the layer
+    //         return hasTargetStrategy && activeStrategiesOnLayer.length == 1;
+    //     }
+
+    //     if (targetType == StrategyType.SEMI_EXCLUSIVE) {
+    //         // SEMI_EXCLUSIVE can only work with EXCLUSIVE or other SEMI_EXCLUSIVE
+    //         return hasTargetStrategy && !hasExclusive && !hasSemiExclusive;
+    //     }
+
+    //     return false;
+    // }
+
+    function getStrategyLayer(
+        uint256 poolId,
+        uint32 strategyId
+    ) external view returns (uint8) {
+        return strategyLayer[poolId][strategyId];
+    }
+
+    function getStrategyExclusivity(
+        uint32 strategyId
+    ) external view returns (StrategyExclusivity) {
+        return exclusivity[strategyId];
+    }
+
+    function getLayerStrategies(
+        uint256 poolId,
+        uint8 layer
+    ) external view returns (uint32[] memory) {
+        return poolLayerStrategies[poolId][layer];
+    }
+
+    function hasLayer(
+        uint256 poolId,
+        uint8 layer
+    ) external view returns (bool) {
+        return _poolLayers[poolId].contains(layer);
+    }
+
+    function getPoolsByDateRange(
+        uint16 _fromDay,
+        uint16 _toDay
+    ) external view returns (uint256[] memory) {
+        // This can be gas-intensive if there are many pools.
+        uint256[] memory tempPools = new uint256[](nextPoolId - 1);
+        uint256 count = 0;
+        for (uint256 i = 1; i < nextPoolId; i++) {
+            if (pools[i].startDay <= _toDay && pools[i].endDay >= _fromDay) {
+                tempPools[count] = i;
+                count++;
+            }
+        }
+
+        uint256[] memory result = new uint256[](count);
+        for (uint256 i = 0; i < count; i++) {
+            result[i] = tempPools[i];
+        }
+        return result;
+    }
+
+    function getPool(uint256 poolId) external view returns (Pool memory) {
+        return pools[poolId];
+    }
+
+    function getPools(
+        uint256[] memory poolIds
+    ) external view returns (Pool[] memory result) {
+        result = new Pool[](poolIds.length);
+        for (uint256 i = 0; i < poolIds.length; i++) {
+            result[i] = pools[poolIds[i]];
+        }
+    }
+    function getPoolCount() external view returns (uint256) {
+        return nextPoolId - 1;
+    }
+
+    function isPoolActive(uint256 poolId) external view returns (bool) {
+        return _isActive(poolId);
+    }
+
+    function isPoolEnded(uint256 poolId) external view returns (bool) {
+        return _isEnded(poolId);
+    }
+
+    function isPoolCalculated(uint256 poolId) external view returns (bool) {
+        return _isCalculated(poolId);
+    }
+
+    function getPoolLayers(
+        uint256 poolId // it is uint256 because of EnumerableSet.UintSet. We don't convert to save gas
+    ) external view returns (uint256[] memory) {
+        return _poolLayers[poolId].values();
+    }
+
+    /** ------------------------------------------------
+     *  ! Internal Helpers
+     * ------------------------------------------------ */
+
+    function _isStarted(uint256 poolId) internal view returns (bool) {
+        return
+            pools[poolId].startDay <= _getCurrentDay() &&
+            pools[poolId].startDay != 0;
+    }
+
+    function _isEnded(uint256 poolId) internal view returns (bool) {
+        return
+            pools[poolId].endDay < _getCurrentDay() &&
+            pools[poolId].endDay != 0;
+    }
+
+    function _isActive(uint256 poolId) internal view returns (bool) {
+        return _isStarted(poolId) && !_isEnded(poolId);
+    }
+
+    function _isCalculated(uint256 poolId) internal view returns (bool) {
+        return pools[poolId].totalPoolWeight > 0;
+    }
+
+    function _getCurrentDay() internal view virtual returns (uint16) {
+        return uint16(block.timestamp / 1 days);
     }
 }

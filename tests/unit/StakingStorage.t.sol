@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
-import {Test, console2} from "forge-std/Test.sol";
-import {StakingStorage} from "../../src/StakingStorage.sol";
-import {StakingVault} from "../../src/StakingVault.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {MockERC20} from "../helpers/MockERC20.sol";
-import {Flags} from "../../src/lib/Flags.sol";
-import {StakingFlags} from "../../src/StakingFlags.sol";
-import {StakingErrors} from "../../src/interfaces/staking/StakingErrors.sol";
+import "forge-std/Test.sol";
+import "../../src/StakingStorage.sol";
+import "../../src/StakingVault.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "../helpers/MockERC20.sol";
+import "../../src/lib/Flags.sol";
+import "../../src/StakingFlags.sol";
+import "../../src/interfaces/staking/StakingErrors.sol";
 
 contract StakingStorageTest is Test {
     StakingStorage public stakingStorage;
@@ -163,10 +163,7 @@ contract StakingStorageTest is Test {
         );
 
         // Query day before first checkpoint
-        assertEq(
-            stakingStorage.getStakerBalanceAt(user1, day1 - 1),
-            0
-        );
+        assertEq(stakingStorage.getStakerBalanceAt(user1, day1 - 1), 0);
 
         vm.stopPrank();
     }

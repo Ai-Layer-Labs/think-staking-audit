@@ -291,91 +291,100 @@ This document defines use cases for the Token Staking System, including both the
 
 ## Reward System Use Cases
 
-### UC21: Reward Strategy Management
+### UC21: Pool and Strategy Configuration
 
 **Actor**: Manager (MANAGER_ROLE)
-**Description**: Register and manage reward calculation strategies.
-**Contract**: StrategiesRegistry
-
-**Available Operations**:
-- Register new strategies (`registerStrategy()`).
-- Remove strategies (`removeStrategy()`).
-
-**Strategy Types**:
-- **`ADMIN_GRANTED`**: For pool-based rewards calculated by an off-chain process.
-- **`USER_CLAIMABLE`**: For rewards that can be calculated and claimed on-demand by the user.
-
-**Postconditions**:
-- Strategies are properly registered and mapped to an ID.
-- Access control prevents unauthorized modifications.
-
-### UC22: Pool Lifecycle Management
-
-**Actor**: Manager (MANAGER_ROLE)
-**Description**: Manage reward pool states from announcement to finalization.
-**Contract**: PoolManager
-
-**Pool Flow**:
-1.  **ANNOUNCED**: `upsertPool()` is called with a `strategyId` and start/end days.
-2.  **ACTIVE**: `updatePoolState()` is called (typically by a keeper) when the current day is within the pool's range.
-3.  **ENDED**: `updatePoolState()` is called when the current day is past the pool's `endDay`.
-4.  **CALCULATED**: `finalizePool()` is called by a manager after off-chain calculations are complete, storing the `totalStakeWeight`.
-
-**Postconditions**:
-- Pools progress through a proper state machine.
-- Finalized pools have the necessary data for reward granting.
-
-### UC23: Immediate Reward Claiming
-
-**Actor**: User
-**Description**: Claim rewards from a `USER_CLAIMABLE` (e.g., APR-style) strategy.
-**Contract**: RewardManager
+**Description**: Configure reward pools and assign strategies before they begin.
+**Contracts**: PoolManager, StrategiesRegistry
 
 **Flow**:
-1. User calls `claimImmediateReward(strategyId, stakeId)`.
-2. `RewardManager` calculates the reward based on the number of full, completed days since the user's last claim for that stake and strategy.
-3. `RewardManager` validates funding, transfers the reward tokens to the user, and updates the `lastClaimDay` for that stake and strategy.
+
+1.  **Register Strategy**: Manager calls `StrategiesRegistry.registerStrategy()` to link a `strategyId` to a deployed strategy contract address.
+2.  **Create Pool**: Manager calls `PoolManager.upsertPool()` to define a new reward period with a `startDay` and `endDay`.
+3.  **Assign Strategy**: Manager calls `PoolManager.assignStrategyToPool()` to add the registered strategy to a specific "layer" within the pool, defining its exclusivity (`NORMAL`, `EXCLUSIVE`, etc.).
+
+**Preconditions**:
+
+- All operations must be performed by an account with `MANAGER_ROLE`.
+- Pool configuration (`upsertPool`, `assignStrategyToPool`) can only be done **before** the pool's `startDay`.
 
 **Postconditions**:
-- User receives the calculated reward tokens.
-- The claim is recorded to prevent double-payment for the same period.
 
-### UC24: Granted Reward Claiming
+- A new reward opportunity is fully configured and ready to become active.
+- `PoolUpserted` and `StrategyAssigned` events are emitted.
+
+### UC22: Pool Finalization (for Dependent Strategies)
+
+**Actor**: Controller (Off-chain service, `CONTROLLER_ROLE`)
+**Description**: Finalize a pool after it has ended to enable reward calculations for `POOL_SIZE_DEPENDENT` strategies.
+**Contract**: PoolManager
+
+**Preconditions**:
+
+- The current day is past the pool's `endDay`.
+- The caller has the `CONTROLLER_ROLE`.
+- An off-chain service has calculated the total eligible stake weight for the pool.
+
+**Flow**:
+
+1.  Controller calls `PoolManager.setPoolTotalStakeWeight()` with the calculated total weight.
+
+**Postconditions**:
+
+- The pool is now considered "calculated" and ready for dependent reward claims.
+- `PoolWeightSet` event is emitted.
+
+### UC23: Unified Reward Claiming
 
 **Actor**: User
-**Description**: Claim rewards from an `ADMIN_GRANTED` (pool-based) strategy.
+**Description**: A user claims a reward from a specific strategy within a pool for one of their stakes.
+**Contracts**: RewardManager, ClaimsJournal, PoolManager, IRewardStrategy
+
+**Preconditions**:
+
+- User has an active, eligible stake (`stakeId`).
+- The strategy has been funded via `RewardManager.fundStrategy()`.
+
+**Flow**:
+
+1.  User calls `RewardManager.claimReward(poolId, strategyId, stakeId)`.
+2.  `RewardManager` fetches pool data from `PoolManager` to check dates and status.
+3.  `RewardManager` fetches strategy info from `StrategiesRegistry` and `IRewardStrategy` to get its type (`POOL_SIZE_DEPENDENT` or `INDEPENDENT`).
+4.  `RewardManager` fetches the user's `lastClaimDay` from `ClaimsJournal`.
+5.  **If strategy is `POOL_SIZE_DEPENDENT`**:
+    - `RewardManager` verifies the pool is finalized (via `PoolManager.isPoolCalculated()`).
+    - `RewardManager` verifies the reward has not been claimed before (`lastClaimDay == 0`).
+    - `RewardManager` calls the dependent `calculateReward` function on the strategy contract.
+6.  **If strategy is `POOL_SIZE_INDEPENDENT`**:
+    - `RewardManager` calls the independent `calculateReward` function, passing the `lastClaimDay`.
+7.  `RewardManager` calls `ClaimsJournal.recordClaim()` to update the user's claim history (`lastClaimDay` and layer exclusivity state).
+8.  `RewardManager` transfers the calculated reward tokens to the user.
+
+**Postconditions**:
+
+- User receives the calculated reward.
+- `ClaimsJournal` is updated to prevent double-claiming and enforce exclusivity rules.
+- `RewardClaimed` event is emitted.
+
+### UC24: Reward Funding
+
+**Actor**: Manager (MANAGER_ROLE)
+**Description**: Deposit reward tokens into the `RewardManager` to fund a specific strategy.
 **Contract**: RewardManager
 
 **Preconditions**:
-- An off-chain administrative process has already calculated the rewards for an `ENDED` pool.
-- The admin process has called `RewardBookkeeper.grantReward()` to record the user's specific reward amount.
+
+- Manager has approved `RewardManager` to spend the reward tokens.
+- Caller has `MANAGER_ROLE`.
 
 **Flow**:
-1. User calls `claimGrantedRewards()`.
-2. `RewardManager` queries the `RewardBookkeeper` for all of the user's unclaimed rewards.
-3. `RewardManager` transfers the total reward amount to the user.
-4. `RewardManager` calls `RewardBookkeeper.batchMarkClaimed()` to mark the rewards as paid.
+
+1.  Manager calls `RewardManager.fundStrategy(strategyId, amount)`.
 
 **Postconditions**:
-- User receives all their available granted rewards.
-- The ledger in `RewardBookkeeper` is updated to prevent double-payment.
 
-### UC25: Immediate Reward Restaking
-
-**Actor**: User
-**Description**: Claim rewards from a `USER_CLAIMABLE` strategy and restake them in a single transaction.
-**Contract**: RewardManager, StakingVault
-
-**Flow**:
-1. User calls `claimImmediateAndRestake(strategyId, stakeId, daysLock)`.
-2. `RewardManager` calculates the user's immediate reward.
-3. `RewardManager` transfers the reward tokens directly to the `StakingVault`.
-4. `RewardManager` calls `StakingVault.stakeFromClaim()` on behalf of the user, creating a new stake with the rewarded tokens.
-
-**Postconditions**:
-- A new stake is created in the user's name with the rewarded amount.
-- The user's claim is recorded to prevent double-payment.
-- The new stake is marked with the `IS_FROM_CLAIM` flag.
+- The balance available for the specified strategy is increased.
+- `StrategyFunded` event is emitted.
 
 ## Error Handling Use Cases
 

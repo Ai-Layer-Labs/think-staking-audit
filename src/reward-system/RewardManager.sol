@@ -1,80 +1,70 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.30;
+pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
 import "../interfaces/staking/IStakingStorage.sol";
-import "../interfaces/staking/IStakingVault.sol";
 import "../interfaces/reward/IRewardStrategy.sol";
-import "../interfaces/reward/IRewardManager.sol";
-import "./RewardBookkeeper.sol";
-import "./StrategiesRegistry.sol";
+
+import "./ClaimsJournal.sol";
+import "./PoolManager.sol";
+import "./FundingManager.sol";
+
 import "../interfaces/reward/RewardErrors.sol";
 
 /**
  * @title RewardManager
- * @author @Tudmotu
- * @notice A refactored, central orchestrator for reward claims and funding.
- * @dev Supports two distinct reward models:
- *      1. ADMIN_GRANTED: Claims rewards from a RewardBookkeeper acting as a ledger.
- *      2. USER_CLAIMABLE: Calculates and pays rewards on-demand for immediate strategies.
+ * @author @Tudmotu & Gemini
+ * @notice A stateless orchestrator for all reward claims, inheriting funding logic.
+ * @dev This contract holds no state about users' claims. It reads from storage contracts,
+ *      executes business logic from strategy contracts, and coordinates payments and state updates.
  */
 contract RewardManager is
-    IRewardManager,
-    IRewardStrategy,
-    AccessControl,
+    FundingManager,
     Pausable,
-    RewardErrors
+    RewardErrors,
+    ReentrancyGuard
 {
     using SafeERC20 for IERC20;
 
-    struct RewardCalculationData {
-        IRewardStrategy strategy;
-        IStakingStorage.Stake stake;
-        uint256 effectiveStartDay;
-        uint8 rewardLayer;
-        IRewardStrategy.Policy stackingPolicy;
-        address rewardToken;
-    }
-
-    struct ClaimableRewardInfo {
-        uint16 strategyId;
-        uint32 poolId;
-        uint8 rewardLayer;
-        IRewardStrategy.Policy stackingPolicy;
-        uint256 amount;
-        bool isPermanentlyClaimed; // Is this reward (or a conflicting one) already locked forever?
-    }
-
-    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
-
+    // --- Immutable contract dependencies ---
     IStakingStorage public immutable stakingStorage;
-    StrategiesRegistry public immutable strategiesRegistry;
-    RewardBookkeeper public immutable rewardBookkeeper;
-    IStakingVault public immutable stakingVault;
+    ClaimsJournal public claimsJournal;
+    PoolManager public immutable poolManager;
 
-    // For PRE_FUNDED strategies
-    mapping(uint32 => uint256) public strategyBalances; // strategyId -> balance
-
-    mapping(bytes32 stakeId => mapping(uint32 strategyId => uint256 day))
-        public lastClaimDay;
+    event RewardClaimed(
+        address indexed user,
+        bytes32 stakeId,
+        uint256 indexed poolId,
+        uint32 indexed strategyId,
+        uint256 rewardAmount,
+        uint16 claimDay
+    );
 
     constructor(
         address _admin,
         address _manager,
         IStakingStorage _stakingStorage,
         StrategiesRegistry _strategiesRegistry,
-        RewardBookkeeper _rewardBookkeeper,
-        IStakingVault _stakingVault
-    ) {
+        ClaimsJournal _claimsJournal,
+        PoolManager _poolManager
+    ) FundingManager(_admin, _manager, _strategiesRegistry) {
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(MANAGER_ROLE, _manager);
+
         stakingStorage = _stakingStorage;
-        strategiesRegistry = _strategiesRegistry;
-        rewardBookkeeper = _rewardBookkeeper;
-        stakingVault = _stakingVault;
+        claimsJournal = _claimsJournal;
+        poolManager = _poolManager;
+    }
+
+    function setClaimsJournal(
+        ClaimsJournal _newClaimsJournal
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        claimsJournal = _newClaimsJournal;
     }
 
     function pause() external onlyRole(MANAGER_ROLE) {
@@ -85,283 +75,218 @@ contract RewardManager is
         _unpause();
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //                        FUNDING FUNCTIONS
-    // ═══════════════════════════════════════════════════════════════════
-
-    function depositForStrategy(
-        uint32 _strategyId,
-        uint256 _amount
-    ) external onlyRole(MANAGER_ROLE) {
-        address strategyAddress = strategiesRegistry.getStrategyAddress(
-            _strategyId
-        );
-        require(
-            strategyAddress != address(0),
-            RewardErrors.StrategyNotRegistered(_strategyId)
-        );
-
-        IRewardStrategy strategy = IRewardStrategy(strategyAddress);
-        (, address rewardToken, , , ) = strategy.getParameters();
-
-        require(_amount > 0, RewardErrors.DeclaredRewardZero());
-
-        strategyBalances[_strategyId] += _amount;
-        IERC20(rewardToken).safeTransferFrom(
-            msg.sender,
-            address(this),
-            _amount
-        );
-
-        emit StrategyFunded(_strategyId, _amount);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    //                        CLAIM FUNCTIONS
-    // ═══════════════════════════════════════════════════════════════════
-
-    function claimImmediateReward(
-        uint32 _strategyId,
-        bytes32 _stakeId
-    ) public whenNotPaused returns (uint256) {
-        uint256 rewardAmount = _calculateAndValidateImmediateReward(
-            msg.sender,
-            _strategyId,
-            _stakeId
-        );
-        require(rewardAmount > 0, RewardErrors.NoRewardToClaim());
-
-        address strategyAddress = strategiesRegistry.getStrategyAddress(
-            _strategyId
-        );
-        IRewardStrategy strategy = IRewardStrategy(strategyAddress);
-        (, address rewardToken, , , ) = strategy.getParameters();
-
-        // For PRE_FUNDED, check balance. For others, assume contract has funds.
-        if (strategyBalances[_strategyId] > 0) {
-            require(
-                strategyBalances[_strategyId] >= rewardAmount,
-                RewardErrors.InsufficientDepositedFunds(
-                    rewardAmount,
-                    strategyBalances[_strategyId]
-                )
-            );
-
-            strategyBalances[_strategyId] -= rewardAmount;
-        }
-
-        IERC20(rewardToken).safeTransfer(msg.sender, rewardAmount);
-
-        return rewardAmount;
-    }
-
-    function claimGrantedRewards() public whenNotPaused {
+    // ===================================================================
+    //                      USER CLAIM FUNCTIONS
+    // ===================================================================
+    function claimReward(
+        bytes32 stakeId,
+        uint32 poolId,
+        uint32 strategyId
+    ) external nonReentrant whenNotPaused {
+        // --- 1. Validation & Data Fetching ---
         (
-            RewardBookkeeper.GrantedReward[] memory rewards,
-            uint256[] memory indices
-        ) = rewardBookkeeper.getUserClaimableRewards(msg.sender);
-        require(rewards.length > 0, RewardErrors.NoRewardToClaim());
+            address staker,
+            address strategyAddress,
+            uint8 layerId
+        ) = _validateAndGetData(stakeId, poolId, strategyId);
 
-        // This simplified version assumes a single reward token for all granted rewards in the batch.
-        uint256 totalAmount;
-        address rewardToken;
-
-        // Get the token from the first reward's strategy
-        uint32 firstStrategyId = rewards[0].strategyId;
-        address firstStrategyAddress = strategiesRegistry.getStrategyAddress(
-            firstStrategyId
+        // --- 2. Reward Calculation ---
+        uint256 rewardAmount = _calculateReward(
+            staker,
+            stakeId,
+            poolId,
+            strategyId,
+            strategyAddress
         );
-        require(
-            firstStrategyAddress != address(0),
-            RewardErrors.StrategyNotRegistered(firstStrategyId)
+        require(rewardAmount > 0, "No reward to claim");
+
+        // --- 3. Payout ---
+        _payout(staker, strategyId, strategyAddress, rewardAmount);
+
+        // --- 4. Record Keeping ---
+        _recordClaim(staker, poolId, strategyId, layerId, stakeId);
+
+        // --- 5. Emit Event ---
+        emit RewardClaimed(
+            staker,
+            stakeId,
+            poolId,
+            strategyId,
+            rewardAmount,
+            _getCurrentDay()
         );
-        (, rewardToken, , , ) = IRewardStrategy(firstStrategyAddress)
-            .getParameters();
-
-        for (uint256 i = 0; i < rewards.length; i++) {
-            totalAmount += rewards[i].amount;
-        }
-
-        IERC20(rewardToken).safeTransfer(msg.sender, totalAmount);
-
-        // Mark as claimed in the bookkeeper
-        rewardBookkeeper.batchMarkClaimed(msg.sender, indices);
-
-        emit GrantedRewardsClaimed(msg.sender, totalAmount, rewards.length);
-    }
-
-    function claimImmediateAndRestake(
-        uint32 _strategyId,
-        bytes32 _stakeId,
-        uint16 _daysLock
-    ) external whenNotPaused {
-        uint256 claimedAmount = _calculateAndValidateImmediateReward(
-            msg.sender,
-            _strategyId,
-            _stakeId
-        );
-        require(claimedAmount > 0, RewardErrors.NoRewardToRestake());
-
-        address strategyAddress = strategiesRegistry.getStrategyAddress(
-            _strategyId
-        );
-        IRewardStrategy strategy = IRewardStrategy(strategyAddress);
-        (, address rewardToken, , , ) = strategy.getParameters();
-
-        // Transfer the reward to the StakingVault, so it can create the stake.
-        IERC20(rewardToken).safeTransfer(address(stakingVault), claimedAmount);
-
-        // Now call the existing stakeFromClaim function.
-        stakingVault.stakeFromClaim(
-            msg.sender,
-            uint128(claimedAmount),
-            _daysLock
-        );
-    }
-
-    function claimRewards(uint32[] calldata _strategyIds) external {
-        address user = msg.sender;
-        uint256 totalAmountToPay = 0;
-        mapping(uint8 => bool) layersWithExclusiveClaim;
-
-        for (uint i = 0; i < _strategyIds.length; i++) {
-            uint32 strategyId = _strategyIds[i];
-
-            // Get strategy parameters
-            (
-                ,
-                uint8 rewardLayer,
-                Policy stackingPolicy,
-                ClaimType claimType
-            ) = strategiesRegistry.getStrategy(strategyId).getParameters();
-
-            // Check for conflicts within this transaction
-            if (
-                stackingPolicy == Policy.EXCLUSIVE_IN_LAYER &&
-                layersWithExclusiveClaim[rewardLayer]
-            ) {
-                revert(
-                    "Cannot claim multiple exclusive rewards from the same layer."
-                );
-            }
-
-            //   // All strategies must be associated with a Pool to provide context for the lock.
-            uint32 poolId = getPoolForStrategy(strategyId);
-
-            // Check the permanent lock
-            if (stackingPolicy == Policy.EXCLUSIVE_IN_LAYER) {
-                require(
-                    !hasClaimedForPoolLayer[user][rewardLayer][poolId],
-                    "Reward already claimed."
-                );
-            }
-
-            uint256 rewardAmount = 0;
-            if (claimType == ClaimType.ADMIN_GRANTED) {
-                rewardAmount = rewardBookkeeper.findAndMarkClaimed(
-                    user,
-                    strategyId,
-                    poolId
-                ); // Pass poolId for precision
-            } else {
-                // USER_CLAIMABLE
-                rewardAmount = strategiesRegistry
-                    .getStrategy(strategyId)
-                    .calculateReward(
-                        user,
-                        stake,
-                        effectiveStartDay,
-                        currentDay - 1
-                    );
-            }
-
-            if (rewardAmount > 0) {
-                totalAmountToPay += rewardAmount;
-
-                // If exclusive, set the permanent lock and the in-transaction lock.
-                if (stackingPolicy == Policy.EXCLUSIVE_IN_LAYER) {
-                    hasClaimedForPoolLayer[user][rewardLayer][poolId] = true;
-                    layersWithExclusiveClaim[rewardLayer] = true;
-                }
-            }
-        }
-
-        // Perform single payment
-        if (totalAmountToPay > 0) {
-            rewardToken.safeTransfer(user, totalAmountToPay);
-        }
     }
 
     // ===================================================================
-    //                        INTERNAL LOGIC
+    //                      Internal Functions
     // ===================================================================
 
-    function _getRewardCalculationData(
-        address _user,
-        uint32 _strategyId,
-        bytes32 _stakeId
-    ) internal view returns (RewardCalculationData memory data) {
-        address owner = address(uint160(uint256(_stakeId) >> 96));
-        require(owner == _user, "Not stake owner");
+    function _validateAndGetData(
+        bytes32 stakeId,
+        uint32 poolId,
+        uint32 strategyId
+    )
+        internal
+        view
+        returns (address staker, address strategyAddress, uint8 layerId)
+    {
+        staker = _getStakerFromId(stakeId);
+        require(staker == _msgSender(), "Not stake owner");
 
-        address strategyAddress = strategiesRegistry.getStrategyAddress(
-            _strategyId
-        );
+        strategyAddress = strategiesRegistry.getStrategyAddress(strategyId);
         require(strategyAddress != address(0), "Strategy not registered");
 
-        data.strategy = IRewardStrategy(strategyAddress);
-        (, data.rewardToken, data.rewardLayer, data.stackingPolicy, ) = data
-            .strategy
-            .getParameters();
+        layerId = poolManager.getStrategyLayer(poolId, strategyId);
+        _validateExclusivity(staker, poolId, layerId, strategyId);
 
-        data.stake = stakingStorage.getStake(_stakeId);
-        uint256 lastClaim = lastClaimDay[_stakeId][_strategyId];
-        data.effectiveStartDay = lastClaim > data.stake.stakeDay
-            ? lastClaim + 1
-            : data.stake.stakeDay;
+        // Strategy-dependent validation
+        IRewardStrategy.StrategyType strategyType = IRewardStrategy(
+            strategyAddress
+        ).getStrategyType();
+
+        if (strategyType == IRewardStrategy.StrategyType.POOL_SIZE_DEPENDENT) {
+            require(poolManager.isPoolEnded(poolId), "Pool has not ended");
+        } else {
+            require(poolManager.isPoolActive(poolId), "Pool is not active");
+        }
     }
 
-    function _calculateAndValidateImmediateReward(
-        address _user,
-        uint32 _strategyId,
-        bytes32 _stakeId
-    ) internal returns (uint256) {
-        RewardCalculationData memory data = _getRewardCalculationData(
-            _user,
-            _strategyId,
-            _stakeId
-        );
-        uint256 currentDay = block.timestamp / 1 days;
+    function _validateExclusivity(
+        address staker,
+        uint32 poolId,
+        uint8 layerId,
+        uint32 strategyId
+    ) internal view {
+        PoolManager.StrategyExclusivity strategyType = poolManager
+            .getStrategyExclusivity(strategyId);
+        ClaimsJournal.LayerClaimType layerClaimState = claimsJournal
+            .getLayerClaimState(staker, poolId, layerId);
 
-        if (data.effectiveStartDay >= currentDay) return 0;
-
-        uint256 rewardAmount = data.strategy.calculateReward(
-            _user,
-            data.stake,
-            data.effectiveStartDay,
-            currentDay - 1 // Rewards are for completed days
-        );
-        if (rewardAmount == 0) return 0;
-
-        // Enforce exclusivity and update timestamps
-        if (data.stackingPolicy == IRewardStrategy.Policy.EXCLUSIVE_IN_LAYER) {
+        if (strategyType == PoolManager.StrategyExclusivity.EXCLUSIVE) {
             require(
-                exclusiveClaimDay[_stakeId][data.rewardLayer] != currentDay,
-                "Layer is locked"
+                layerClaimState == ClaimsJournal.LayerClaimType.NONE,
+                "Layer has claims"
             );
-            exclusiveClaimDay[_stakeId][data.rewardLayer] = currentDay;
+        } else {
+            require(
+                layerClaimState != ClaimsJournal.LayerClaimType.EXCLUSIVE,
+                "Layer locked by exclusive claim"
+            );
+            if (
+                strategyType == PoolManager.StrategyExclusivity.SEMI_EXCLUSIVE
+            ) {
+                require(
+                    layerClaimState !=
+                        ClaimsJournal.LayerClaimType.SEMI_EXCLUSIVE,
+                    "Layer has semi-exclusive claim"
+                );
+            }
         }
-        lastClaimDay[_stakeId][_strategyId] = currentDay;
+    }
 
-        emit ImmediateRewardClaimed(
-            _user,
-            _strategyId,
-            _stakeId,
-            rewardAmount,
-            data.effectiveStartDay,
-            currentDay
+    function _calculateReward(
+        address staker,
+        bytes32 stakeId,
+        uint32 poolId,
+        uint32 strategyId,
+        address strategyAddress
+    ) internal view returns (uint256 rewardAmount) {
+        IRewardStrategy strategyContract = IRewardStrategy(strategyAddress);
+        IRewardStrategy.StrategyType strategyType = strategyContract
+            .getStrategyType();
+        IStakingStorage.Stake memory stake = stakingStorage.getStake(stakeId);
+        PoolManager.Pool memory pool = poolManager.getPool(poolId);
+
+        uint16 lastClaimDay = claimsJournal.getLastClaimDay(
+            stakeId,
+            strategyId
         );
 
-        return rewardAmount;
+        if (strategyType == IRewardStrategy.StrategyType.POOL_SIZE_DEPENDENT) {
+            // CRITICAL: Prevent re-claiming a one-time reward.
+            require(lastClaimDay == 0, "Reward already claimed");
+            require(
+                poolManager.isPoolCalculated(poolId),
+                "Pool not calculated"
+            );
+
+            rewardAmount = strategyContract.calculateReward(
+                staker,
+                stake,
+                pool.totalPoolWeight,
+                strategyBalances[strategyId],
+                pool.startDay,
+                pool.endDay
+            );
+        } else if (
+            strategyType == IRewardStrategy.StrategyType.POOL_SIZE_INDEPENDENT
+        ) {
+            // For this type, lastClaimDay is a checkpoint, not a blocker.
+            rewardAmount = strategyContract.calculateReward(
+                staker,
+                stake,
+                pool.startDay,
+                pool.endDay,
+                lastClaimDay
+            );
+        }
+    }
+    function _payout(
+        address staker,
+        uint32 strategyId,
+        address strategyAddress,
+        uint256 rewardAmount
+    ) internal {
+        _decreaseStrategyBalance(strategyId, rewardAmount);
+
+        address rewardToken = IRewardStrategy(strategyAddress).getRewardToken();
+        IERC20(rewardToken).safeTransfer(staker, rewardAmount);
+    }
+
+    function _recordClaim(
+        address staker,
+        uint32 poolId,
+        uint32 strategyId,
+        uint8 layerId,
+        bytes32 stakeId
+    ) internal {
+        PoolManager.StrategyExclusivity strategyType = poolManager
+            .getStrategyExclusivity(strategyId);
+
+        IRewardStrategy strategyContract = IRewardStrategy(
+            strategiesRegistry.getStrategyAddress(strategyId)
+        );
+        bool isPoolSizeDependent = strategyContract.getStrategyType() ==
+            IRewardStrategy.StrategyType.POOL_SIZE_DEPENDENT;
+
+        ClaimsJournal.LayerClaimType claimType;
+        if (strategyType == PoolManager.StrategyExclusivity.NORMAL) {
+            claimType = ClaimsJournal.LayerClaimType.NORMAL;
+        } else if (
+            strategyType == PoolManager.StrategyExclusivity.SEMI_EXCLUSIVE
+        ) {
+            claimType = ClaimsJournal.LayerClaimType.SEMI_EXCLUSIVE;
+        } else {
+            claimType = ClaimsJournal.LayerClaimType.EXCLUSIVE;
+        }
+
+        claimsJournal.recordClaim(
+            staker,
+            poolId,
+            layerId,
+            strategyId,
+            stakeId,
+            claimType,
+            isPoolSizeDependent,
+            _getCurrentDay()
+        );
+    }
+
+    function _getStakerFromId(bytes32 stakeId) internal pure returns (address) {
+        return address(uint160(uint256(stakeId) >> 96));
+    }
+
+    function _getCurrentDay() internal view returns (uint16) {
+        return uint16(block.timestamp / 1 days);
     }
 }

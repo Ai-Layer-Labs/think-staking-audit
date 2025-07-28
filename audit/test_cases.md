@@ -424,78 +424,155 @@ Feature: Time Lock Business Logic
 
 ## REWARD SYSTEM TESTS
 
-### TC_R01: Strategy Registration (UC21)
+### PoolManager (Scheduler) Tests
+
+### TC_R01: Pool Creation and Configuration
 
 ```gherkin
-Feature: Strategy Registration and Management
-  Scenario: Successfully register new reward strategy
-    Given manager has MANAGER_ROLE
-    And strategy contract implements IRewardStrategy
-    When manager calls StrategiesRegistry.registerStrategy(strategyId, strategyAddress)
-    Then strategy should be registered with the given ID
-    And StrategyRegistered event should be emitted
+Feature: Pool Scheduling and Configuration
+  Scenario: Manager successfully creates a new pool
+    Given caller has MANAGER_ROLE
+    When manager calls upsertPool() with valid start/end days
+    Then a new pool should be created with a unique ID
+    And the pool's startDay and endDay should be set correctly
+    And PoolUpserted event should be emitted
+
+  Scenario: Manager fails to update a started pool
+    Given a pool's startDay has already passed
+    When manager calls upsertPool() for that poolId
+    Then the transaction should revert with PoolAlreadyStarted()
 ```
 
-### TC_R02: Pool Lifecycle (UC22)
+### TC_R02: Strategy Assignment
 
 ```gherkin
-Feature: Pool Lifecycle Management
-  Scenario: Successfully create and advance a pool
-    Given manager has MANAGER_ROLE
-    When manager calls PoolManager.upsertPool() with valid parameters
-    Then a new pool should be created in the ANNOUNCED state
-    And PoolUpserted and PoolStateChanged events should be emitted
-    When the current day advances past the pool's startDay
-    And updatePoolState() is called
-    Then the pool state should transition to ACTIVE
-    When the current day advances past the pool's endDay
-    And updatePoolState() is called
-    Then the pool state should transition to ENDED
-    When manager calls finalizePool() with the total weight
-    Then the pool state should transition to CALCULATED
-    And the total weight should be stored
+Feature: Strategy Assignment to Pools
+  Scenario: Manager successfully assigns a strategy to a pool layer
+    Given a pool exists and has not started
+    And caller has MANAGER_ROLE
+    When manager calls assignStrategyToPool() with poolId, layerId, strategyId, and exclusivity
+    Then the strategy should be added to the pool's specified layer
+    And the strategy's exclusivity should be recorded
+    And StrategyAssigned event should be emitted
+
+  Scenario: Manager fails to assign a strategy to a started pool
+    Given a pool has already started
+    When manager calls assignStrategyToPool()
+    Then the transaction should revert with PoolAlreadyStarted()
 ```
 
-### TC_R03: Immediate Reward Claim (UC23)
+### TC_R03: Pool Weight Finalization
 
 ```gherkin
-Feature: Immediate Reward Claiming
-  Scenario: User claims an immediate reward
-    Given a USER_CLAIMABLE strategy is registered and funded
-    And a user has an active stake
-    When the user calls RewardManager.claimImmediateReward(strategyId, stakeId)
-    Then the reward amount is calculated based on full days staked
-    And the tokens are transferred to the user
-    And the user's lastClaimDay is updated to the current day
-    And an ImmediateRewardClaimed event is emitted
+Feature: Pool Weight Finalization for Dependent Strategies
+  Scenario: Controller successfully sets the total stake weight
+    Given a pool has ended (current day > endDay)
+    And caller has CONTROLLER_ROLE
+    When controller calls setPoolTotalStakeWeight() with a non-zero weight
+    Then the pool's totalStakeWeight should be updated
+    And PoolWeightSet event should be emitted
+
+  Scenario: Controller fails to set weight for an active pool
+    Given a pool is still active (current day <= endDay)
+    When controller calls setPoolTotalStakeWeight()
+    Then the transaction should revert with PoolNotEnded()
+
+  Scenario: Unauthorized actor fails to set weight
+    Given caller does not have CONTROLLER_ROLE
+    When caller attempts to setPoolTotalStakeWeight()
+    Then transaction should revert with AccessControl error
 ```
 
-### TC_R04: Granted Reward Claim (UC24)
+## RewardManager (Orchestrator) & ClaimsJournal (Ledger) Tests
+
+### TC_R04: Successful Claim (Pool Size Dependent Strategy)
 
 ```gherkin
-Feature: Granted Reward Claiming
-  Scenario: User claims a granted reward
-    Given an ADMIN_GRANTED strategy is registered
-    And an admin has granted a reward to a user in the RewardBookkeeper
-    When the user calls RewardManager.claimGrantedRewards()
-    Then the RewardManager fetches the claimable rewards from the bookkeeper
-    And the total token amount is transferred to the user
-    And the RewardManager instructs the bookkeeper to mark the rewards as claimed
-    And a GrantedRewardsClaimed event is emitted
+Feature: Claiming Rewards for Dependent Strategies
+  Scenario: User claims a reward after a pool is finalized
+    Given a POOL_SIZE_DEPENDENT strategy exists
+    And its pool has ended and its totalStakeWeight has been set
+    And the user has an eligible stake
+    And the user has NOT claimed this reward before
+    When user calls RewardManager.claimReward(poolId, strategyId, stakeId)
+    Then RewardManager verifies the pool is calculated
+    And it retrieves the strategy type (POOL_SIZE_DEPENDENT)
+    And it calls the correct `calculateReward` overload on the strategy contract
+    And ClaimsJournal.recordClaim() is called to log the claim day and layer state
+    And the calculated reward amount is transferred to the user
+    And a RewardClaimed event is emitted
 ```
 
-### TC_R05: Immediate Reward Restake (UC25)
+### TC_R05: Successful Claim (Pool Size Independent Strategy)
 
 ```gherkin
-Feature: Immediate Reward Restaking
-  Scenario: User claims and restakes an immediate reward
-    Given a USER_CLAIMABLE strategy is registered and funded
-    And a user has an active stake
-    When the user calls RewardManager.claimImmediateAndRestake(strategyId, stakeId, daysLock)
-    Then the reward amount is calculated
-    And the reward tokens are transferred to the StakingVault
-    And the StakingVault's stakeFromClaim() function is called to create a new stake for the user
-    And the user's lastClaimDay is updated
+Feature: Claiming Rewards for Independent Strategies
+  Scenario: User claims a reward from an active pool
+    Given a POOL_SIZE_INDEPENDENT strategy exists
+    And its pool is currently active
+    And the user has an eligible stake
+    When user calls RewardManager.claimReward(poolId, strategyId, stakeId)
+    Then RewardManager retrieves the strategy type (POOL_SIZE_INDEPENDENT)
+    And it calls the correct `calculateReward` overload, passing the `lastClaimDay` from ClaimsJournal
+    And ClaimsJournal.recordClaim() updates the `lastClaimDay` to the current day
+    And the calculated reward is transferred to the user
+    And a RewardClaimed event is emitted
+```
+
+### TC_R06: Failed Claim - Pool Not Finalized (Dependent Strategy)
+
+```gherkin
+Feature: Claim Validation for Dependent Strategies
+  Scenario: User attempts to claim before pool is calculated
+    Given a POOL_SIZE_DEPENDENT strategy's pool has ended but weight is NOT set
+    When user calls claimReward()
+    Then the transaction should revert with PoolNotCalculated()
+```
+
+### TC_R07: Failed Claim - Double Claim (Dependent Strategy)
+
+```gherkin
+Feature: Double-Claim Prevention
+  Scenario: User attempts to claim a dependent reward twice
+    Given a user has already successfully claimed a POOL_SIZE_DEPENDENT reward
+    And ClaimsJournal has a record for that stakeId and strategyId
+    When the user calls claimReward() for the same reward again
+    Then the transaction should revert with "Reward already claimed"
+```
+
+### TC_R08: Failed Claim - Exclusivity Violation
+
+```gherkin
+Feature: Claim Exclusivity Enforcement
+  Scenario: User attempts to claim a normal reward after an exclusive one on the same layer
+    Given a user has claimed a reward from an EXCLUSIVE strategy on layer 1
+    And ClaimsJournal has recorded this exclusive claim
+    When the user attempts to call claimReward() for a NORMAL strategy on the same layer 1
+    Then the transaction should revert with LayerIsExclusive()
+```
+
+### TC_R09: Funding a Strategy
+
+```gherkin
+Feature: Reward Funding
+  Scenario: Manager successfully funds a strategy
+    Given caller has MANAGER_ROLE
+    And has approved RewardManager to spend reward tokens
+    When manager calls fundStrategy(strategyId, amount)
+    Then reward tokens are transferred to RewardManager
+    And the balance for the strategyId is increased
+    And StrategyFunded event is emitted
+```
+
+### TC_R10: View Claimable Reward
+
+```gherkin
+Feature: Reward Preview
+  Scenario: User checks pending reward amount
+    Given a user is eligible for a reward
+    When user calls getClaimableReward(poolId, strategyId, stakeId)
+    Then the function should return the calculated pending reward amount
+    And no state change should occur (it is a view function)
 ```
 
 ### TC_SCS01: Simple Strategy Full Period Calculation

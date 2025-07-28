@@ -35,6 +35,9 @@ contract RewardErrors {
     // --- Strategy Errors ---
     error StrategyExist(uint32 strategyId);
     error StrategyNotPreFunded(uint32 strategyId);
-    error StrategyNotRegistered(uint32 strategyId);
     error StrategyCannotBeChanged();
+    error AmountMustBeGreaterThanZero();
+    error InsufficientStrategyBalance();
+    error CallerIsNotManager();
+    error StrategyNotRegistered(uint32 strategyId);
 }
