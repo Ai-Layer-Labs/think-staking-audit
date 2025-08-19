@@ -18,7 +18,7 @@ contract ClaimsJournalTest is Test {
 
     function setUp() public {
         vm.prank(admin);
-        claimsJournal = new ClaimsJournal(admin, rewardManager);
+        claimsJournal = new ClaimsJournal(admin);
 
         vm.prank(admin);
         claimsJournal.grantRole(
@@ -37,7 +37,6 @@ contract ClaimsJournalTest is Test {
             STRATEGY_ID_1,
             STAKE_ID,
             ClaimsJournal.LayerClaimType.EXCLUSIVE,
-            false,
             100
         );
 
@@ -48,7 +47,13 @@ contract ClaimsJournalTest is Test {
 
         // Attempt to record a NORMAL claim on the same layer, should fail
         vm.prank(rewardManager);
-        vm.expectRevert(bytes("CJ: Layer locked by exclusive claim"));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                RewardErrors.LayerAlreadyHasExclusiveClaim.selector,
+                LAYER_ID,
+                101
+            )
+        );
         claimsJournal.recordClaim(
             user,
             POOL_ID,
@@ -56,7 +61,6 @@ contract ClaimsJournalTest is Test {
             STRATEGY_ID_2,
             STAKE_ID,
             ClaimsJournal.LayerClaimType.NORMAL,
-            false,
             101
         );
     }
@@ -71,7 +75,6 @@ contract ClaimsJournalTest is Test {
             STRATEGY_ID_1,
             STAKE_ID,
             ClaimsJournal.LayerClaimType.SEMI_EXCLUSIVE,
-            false,
             100
         );
 
@@ -82,7 +85,13 @@ contract ClaimsJournalTest is Test {
 
         // Attempt to record another SEMI_EXCLUSIVE claim, should fail
         vm.prank(rewardManager);
-        vm.expectRevert(bytes("CJ: Layer has semi-exclusive claim"));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                RewardErrors.LayerAlreadyHasSemiExclusiveClaim.selector,
+                LAYER_ID,
+                101
+            )
+        );
         claimsJournal.recordClaim(
             user,
             POOL_ID,
@@ -90,7 +99,6 @@ contract ClaimsJournalTest is Test {
             STRATEGY_ID_2,
             STAKE_ID,
             ClaimsJournal.LayerClaimType.SEMI_EXCLUSIVE,
-            false,
             101
         );
 
@@ -103,7 +111,6 @@ contract ClaimsJournalTest is Test {
             STRATEGY_ID_2,
             STAKE_ID,
             ClaimsJournal.LayerClaimType.NORMAL,
-            false,
             101
         );
 

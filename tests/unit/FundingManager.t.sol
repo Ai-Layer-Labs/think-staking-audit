@@ -98,14 +98,8 @@ contract FundingManagerTest is Test {
         fundingManager = new FundingManager(admin, manager, strategiesRegistry);
 
         vm.startPrank(manager);
-        strategiesRegistry.registerStrategy(
-            STRATEGY_ID_1,
-            address(mockStrategy1)
-        );
-        strategiesRegistry.registerStrategy(
-            STRATEGY_ID_2,
-            address(mockStrategy2)
-        );
+        strategiesRegistry.registerStrategy(address(mockStrategy1));
+        strategiesRegistry.registerStrategy(address(mockStrategy2));
 
         // Mint some tokens to the manager for funding
         rewardToken.mint(manager, 1_000_000 ether);
@@ -262,5 +256,45 @@ contract FundingManagerTest is Test {
             STRATEGY_ID_2,
             transferAmount
         );
+    }
+
+    function test_FundStrategy_Fail_StrategyNotExist() public {
+        uint256 amount = 100 ether;
+        uint256 nonExistentStrategyId = 999; // Assuming 999 does not exist
+
+        vm.startPrank(manager);
+        rewardToken.approve(address(fundingManager), amount);
+        vm.expectRevert(abi.encodeWithSelector(RewardErrors.StrategyNotExist.selector, nonExistentStrategyId));
+        fundingManager.fundStrategy(nonExistentStrategyId, amount);
+        vm.stopPrank();
+    }
+
+    function test_FundStrategy_Fail_AmountMustBeGreaterThanZero() public {
+        uint256 amount = 0; // Zero amount
+
+        vm.startPrank(manager);
+        rewardToken.approve(address(fundingManager), amount); // Approve 0 is fine
+        vm.expectRevert(RewardErrors.AmountMustBeGreaterThanZero.selector);
+        fundingManager.fundStrategy(STRATEGY_ID_1, amount);
+        vm.stopPrank();
+    }
+
+    function test_AssignRewardToPool_Success() public {
+        uint256 fundAmount = 100 ether;
+        uint256 poolId = 1;
+        uint256 assignAmount = 50 ether;
+
+        // Fund the strategy first
+        vm.startPrank(manager);
+        rewardToken.approve(address(fundingManager), fundAmount);
+        fundingManager.fundStrategy(STRATEGY_ID_1, fundAmount);
+        vm.stopPrank();
+
+        // Assign rewards to a pool
+        vm.prank(manager);
+        fundingManager.assignRewardToPool(poolId, STRATEGY_ID_1, assignAmount);
+
+        // Assert that the mapping is updated
+        assertEq(fundingManager.rewardAssignedToPool(poolId, STRATEGY_ID_1), assignAmount, "Reward assigned to pool mismatch");
     }
 }

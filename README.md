@@ -42,10 +42,12 @@ _(Note: These addresses may be from previous development deployments and could b
 
 - **StakingVault**: [`0xE9b606be7c543B93D0FF5CE72A0E804d5f4147b2`](https://sepolia.etherscan.io/address/0xE9b606be7c543B93D0FF5CE72A0E804d5f4147b2/#code)
 - **StakingStorage**: [`0xA71dF04aAC1DC6a0E62bC5a396ECaa976fF29f5A`](https://sepolia.etherscan.io/address/0xA71dF04aAC1DC6a0E62bC5a396ECaa976fF29f5A/#code)
-- **PoolManager**: `0x...`
-- **StrategiesRegistry**: `0x...`
-- **RewardManager**: `0x...`
-- **ClaimsJournal**: `0x...`
+- **PoolManager**: [`0x4a80D49aEdC75ebD2f6387C5dBb0ecd95F8A53f1`](https://sepolia.etherscan.io/address/0x4a80D49aEdC75ebD2f6387C5dBb0ecd95F8A53f1/#code)
+- **StrategiesRegistry**: [`0x34D7377Ae437F4093f379878aa21753266707A7d`](https://sepolia.etherscan.io/address/0x34D7377Ae437F4093f379878aa21753266707A7d/#code)
+- **RewardManager**: [`0x206f027fFB82d9daBA0Bb34810a2b6Be2B736788`](https://sepolia.etherscan.io/address/0x206f027fFB82d9daBA0Bb34810a2b6Be2B736788/#code)
+- **ClaimsJournal**: [`0xfE2B9626f7e5D2140bF281aC5C521DA59417cF08`](https://sepolia.etherscan.io/address/0xfE2B9626f7e5D2140bF281aC5C521DA59417cF08/#code)
+- **StandardStakingStrategy**: [`0xebbc67f2cffcd21d38fb82fa218ef60c42779d29`](https://sepolia.etherscan.io/address/0xebbc67f2cffcd21d38fb82fa218ef60c42779d29/#code)
+- **FullStakingStrategy**: [`0xbdf3203f9808e2bc8bdc4c1ed30a2888c8d54787`](https://sepolia.etherscan.io/address/0xbdf3203f9808e2bc8bdc4c1ed30a2888c8d54787/#code)
 
 ### Project Status
 
@@ -73,7 +75,7 @@ For a detailed breakdown of all documentation, see the tables below.
 
 ## 🛠️ Technology Stack
 
-- **Smart Contracts**: Solidity ^0.8.20
+- **Smart Contracts**: Solidity 0.8.30
 - **Testing Framework**: Foundry
 - **Security Libraries**: OpenZeppelin
 

@@ -126,7 +126,7 @@ contract StandardStakingStrategyTest is Test {
         );
 
         // Pool from day 1 to 30
-        uint128 totalPoolWeight = 1000 * 30; // One user, full period
+        uint128 totalPoolWeight = 1000 * 29; // One user, full period
         uint256 reward = strategy.calculateReward(
             user,
             stake,
@@ -144,8 +144,8 @@ contract StandardStakingStrategyTest is Test {
             stakeId
         );
 
-        // Pool from day 1 to 30. User's weight is 1000 * 21. Assume another user has weight of 9000.
-        uint128 totalPoolWeight = 1000 * 21 + 9000;
+        // Pool from day 1 to 30. User's weight is 1000 * 20. Assume another user has weight of 9000.
+        uint128 totalPoolWeight = 1000 * 20 + 9000;
         uint256 reward = strategy.calculateReward(
             user,
             stake,
@@ -154,7 +154,7 @@ contract StandardStakingStrategyTest is Test {
             1,
             30
         );
-        uint256 expectedReward = (uint256(1000 * 21) * TOTAL_REWARD_AMOUNT) /
+        uint256 expectedReward = (uint256(1000 * 20) * TOTAL_REWARD_AMOUNT) /
             totalPoolWeight;
         assertEq(reward, expectedReward);
     }

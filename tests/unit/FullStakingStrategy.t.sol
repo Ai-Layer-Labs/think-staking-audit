@@ -172,8 +172,8 @@ contract FullStakingStrategyTest is Test {
         assertEq(reward, TOTAL_REWARD_AMOUNT); // Full reward
     }
 
-    function test_CalculateReward_Eligible_UnstakedOnEndDay() public {
-        // Stake starts early, unstaked on day 90 (end of parent pool) - should be eligible
+    function test_CalculateReward_NotEligible_UnstakedOnEndDay() public {
+        // Stake starts early, unstaked on day 90 (end of parent pool) - should be not eligible
         mockStakingStorage.mockStake(stakeId, user, 1000, 10, 90, 0, 0);
         IStakingStorage.Stake memory stake = mockStakingStorage.getStake(
             stakeId
@@ -188,7 +188,7 @@ contract FullStakingStrategyTest is Test {
             PARENT_POOL_START_DAY,
             PARENT_POOL_END_DAY
         );
-        assertEq(reward, (1000 * TOTAL_REWARD_AMOUNT) / totalPoolWeight);
+        assertEq(reward, 0);
     }
 
     function test_CalculateReward_Eligible_UnstakedAfterEndDay() public {

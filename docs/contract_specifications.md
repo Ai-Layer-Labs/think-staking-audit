@@ -84,15 +84,6 @@ Acts as the ledger for all user claims.
 
 The central orchestrator for reward claims.
 
-#### State Variables
-
-- `stakingStorage`: `IStakingStorage`
-- `strategiesRegistry`: `IStrategiesRegistry`
-- `claimsJournal`: `IClaimsJournal`
-- `poolManager`: `IPoolManager`
-- `strategyBalances`: `mapping(uint32 => uint256)`: Stores the funds available for each strategy.
-- `rewardToken`: `IERC20`: The token used for rewards.
-
 #### Functions
 
 - `fundStrategy(uint32 _strategyId, uint256 _amount)`: Deposits funds for a specific strategy. Access: `MANAGER_ROLE`.
