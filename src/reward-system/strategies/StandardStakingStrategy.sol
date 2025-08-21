@@ -14,6 +14,8 @@ contract StandardStakingStrategy is IRewardStrategy {
     address public immutable rewardToken;
     bool public immutable isReStakingAllowed;
 
+    uint16 public immutable MINIMUM_REWARDABLE_DURATION = 2;
+
     error MethodNotSupported();
 
     constructor(address _rewardToken, bool _isReStakingAllowed) {
@@ -43,36 +45,33 @@ contract StandardStakingStrategy is IRewardStrategy {
         uint256 totalPoolWeight,
         uint256 totalRewardAmount,
         uint16 poolStartDay,
-        uint16 poolEndDay
+        uint16 poolEndDay,
+        uint16 lastClaimDay
     ) external pure returns (uint256) {
-        if (totalPoolWeight == 0) {
-            return 0;
-        }
-
-        // Step 1: Calculate user's weight (as before).
+        // Eligibility checks:
         if (
-            stake.stakeDay > poolEndDay ||
-            (stake.unstakeDay != 0 && stake.unstakeDay < poolEndDay)
+            lastClaimDay > 0 || // 1. Not claimed yet.
+            totalPoolWeight == 0 || // 2. Pool has it's weight calculated.
+            stake.stakeDay > poolEndDay || // 3. Staked past the pool end day.
+            // 4. Unstaked before the pool end day.
+            (stake.unstakeDay > 0 && stake.unstakeDay <= poolEndDay)
         ) {
             return 0;
         }
+
         uint256 effectiveStart = stake.stakeDay > poolStartDay
             ? stake.stakeDay
             : poolStartDay;
-        uint256 effectiveDays = poolEndDay - effectiveStart + 1;
-        uint256 userWeight = stake.amount * effectiveDays;
+
+        uint256 effectiveDays = poolEndDay - effectiveStart;
+        uint256 userWeight = stake.amount * effectiveDays; // 81000
+
+        if (effectiveDays < MINIMUM_REWARDABLE_DURATION) {
+            // 2
+            return 0; // No reward if stake duration is too short
+        }
 
         // Step 2: Calculate and return the final reward.
         return (userWeight * totalRewardAmount) / totalPoolWeight;
-    }
-
-    function calculateReward(
-        address, // user
-        IStakingStorage.Stake calldata, // stake
-        uint16, // lastClaimDay
-        uint16, // poolStartDay
-        uint16 // poolEndDay
-    ) external pure returns (uint256) {
-        revert("MethodNotSupported");
     }
 }

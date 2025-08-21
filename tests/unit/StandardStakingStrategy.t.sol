@@ -133,7 +133,8 @@ contract StandardStakingStrategyTest is Test {
             totalPoolWeight,
             TOTAL_REWARD_AMOUNT,
             1,
-            30
+            30,
+            0
         );
         assertEq(reward, TOTAL_REWARD_AMOUNT);
     }
@@ -152,7 +153,8 @@ contract StandardStakingStrategyTest is Test {
             totalPoolWeight,
             TOTAL_REWARD_AMOUNT,
             1,
-            30
+            30,
+            0
         );
         uint256 expectedReward = (uint256(1000 * 20) * TOTAL_REWARD_AMOUNT) /
             totalPoolWeight;
@@ -174,7 +176,8 @@ contract StandardStakingStrategyTest is Test {
             1000,
             TOTAL_REWARD_AMOUNT,
             1,
-            30
+            30,
+            0
         ); // Pool from day 1 to 30
         assertEq(reward, 0); // Should be 0 due to withdrawal
     }
@@ -191,7 +194,8 @@ contract StandardStakingStrategyTest is Test {
             1000,
             TOTAL_REWARD_AMOUNT,
             1,
-            30
+            30,
+            0
         ); // Pool from day 1 to 30
         assertEq(reward, 0);
     }
@@ -208,7 +212,8 @@ contract StandardStakingStrategyTest is Test {
             1000,
             TOTAL_REWARD_AMOUNT,
             1,
-            30
+            30,
+            0
         ); // Pool from day 1 to 30
         assertEq(reward, 0);
     }
@@ -225,7 +230,8 @@ contract StandardStakingStrategyTest is Test {
             1000,
             TOTAL_REWARD_AMOUNT,
             10,
-            20
+            20,
+            0
         ); // Pool from day 10 to 20
         assertEq(reward, 0);
     }
@@ -242,7 +248,26 @@ contract StandardStakingStrategyTest is Test {
             0,
             TOTAL_REWARD_AMOUNT,
             1,
-            30
+            30,
+            0
+        );
+        assertEq(reward, 0);
+    }
+
+    function test_CalculateReward_NotEligible_AlreadyClaimed() public {
+        mockStakingStorage.mockStake(stakeId, user, 1000, 1, 0, 0, 0);
+        IStakingStorage.Stake memory stake = mockStakingStorage.getStake(
+            stakeId
+        );
+
+        uint256 reward = strategy.calculateReward(
+            user,
+            stake,
+            1000,
+            TOTAL_REWARD_AMOUNT,
+            1,
+            30,
+            2
         );
         assertEq(reward, 0);
     }

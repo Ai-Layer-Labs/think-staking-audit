@@ -3,17 +3,19 @@ pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 
+import "../interfaces/reward/RewardErrors.sol";
+
 /**
  * @title ClaimsJournal
- * @author @Tudmotu & Gemini
  * @notice Stores all user claim history for both DIRECT and SHARED_POOL rewards.
  * @dev This contract is the single source of truth for the RewardManager to determine
  *      if a user is eligible for a future claim based on their past actions.
  *      It knows nothing about reward logic; it is a simple, append-only ledger.
  */
-contract ClaimsJournal is AccessControl {
+contract ClaimsJournal is AccessControl, RewardErrors {
+    bytes32 constant REWARD_MANAGER_ROLE = keccak256("REWARD_MANAGER_ROLE");
+
     enum LayerClaimType {
-        NONE,
         NORMAL,
         EXCLUSIVE,
         SEMI_EXCLUSIVE
@@ -21,32 +23,29 @@ contract ClaimsJournal is AccessControl {
 
     event LayerStateUpdated(
         address indexed user,
-        uint32 indexed poolId,
-        uint8 indexed layerId,
+        uint256 indexed poolId,
+        uint256 indexed layerId,
         LayerClaimType newStateType
     );
 
-    event DirectClaimRecorded(
+    event ClaimRecorded(
         bytes32 indexed stakeId,
-        uint32 indexed strategyId,
+        uint256 indexed strategyId,
         uint256 claimDay
     );
 
-    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
-
     // Tracks the state of a user's claim on a specific layer of a pool.
     // User Address => Pool ID => Layer ID => Claim Type
-    mapping(address userAddress => mapping(uint32 poolId => mapping(uint8 layerId => LayerClaimType)))
+    mapping(address userAddress => mapping(uint256 poolId => mapping(uint256 layerId => LayerClaimType)))
         public layerClaimState;
 
     // Tracks the last day a reward was claimed for a specific stake and a DIRECT strategy.
     // Stake ID => Strategy ID => Day
-    mapping(bytes32 stakeId => mapping(uint32 strategyId => uint16 claimDay))
+    mapping(bytes32 stakeId => mapping(uint256 poolId => mapping(uint256 strategyId => uint16 claimDay)))
         public claimDates;
 
-    constructor(address _admin, address _rewardManager) {
+    constructor(address _admin) {
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
-        _grantRole(MANAGER_ROLE, _rewardManager);
     }
 
     /**
@@ -55,49 +54,53 @@ contract ClaimsJournal is AccessControl {
      */
     function recordClaim(
         address _user,
-        uint32 _poolId,
-        uint8 _layerId,
-        uint32 _strategyId,
+        uint256 _poolId,
+        uint256 _layerId,
+        uint256 _strategyId,
         bytes32 _stakeId,
         LayerClaimType _claimType,
-        bool _isPoolSizeDependent,
         uint16 _claimDay
-    ) external onlyRole(MANAGER_ROLE) {
+    ) external onlyRole(REWARD_MANAGER_ROLE) {
         LayerClaimType currentLayerState = layerClaimState[_user][_poolId][
             _layerId
         ];
 
         if (_claimType == LayerClaimType.EXCLUSIVE) {
             require(
-                currentLayerState == LayerClaimType.NONE,
-                "CJ: Layer has claims"
+                currentLayerState == LayerClaimType.NORMAL,
+                LayerAlreadyHasClaim(_layerId, _claimDay)
             );
         } else {
             // NORMAL or SEMI_EXCLUSIVE
             require(
                 currentLayerState != LayerClaimType.EXCLUSIVE,
-                "CJ: Layer locked by exclusive claim"
+                LayerAlreadyHasExclusiveClaim(_layerId, _claimDay)
             );
             if (_claimType == LayerClaimType.SEMI_EXCLUSIVE) {
                 require(
                     currentLayerState != LayerClaimType.SEMI_EXCLUSIVE,
-                    "CJ: Layer has semi-exclusive claim"
+                    LayerAlreadyHasSemiExclusiveClaim(_layerId, _claimDay)
                 );
             }
         }
 
-        // Only update state if it's the first stackable/semi-exclusive claim
-        if (currentLayerState == LayerClaimType.NONE) {
+        // if current state is absent or normal,
+        // update it to the new claim type (normal, semi-exclusive or exclusive)
+        if (currentLayerState == LayerClaimType.NORMAL) {
             layerClaimState[_user][_poolId][_layerId] = _claimType;
             emit LayerStateUpdated(_user, _poolId, _layerId, _claimType);
-        } else if (_claimType == LayerClaimType.EXCLUSIVE) {
-            // Redundant but safe
+        }
+        // if current state is exclusive, update it to the max-level
+        // this will override the normal or semi-exclusive claim
+        // if it is already exclusive, it is redundant but safe to rewrite
+        // but cheaper in terms of gas (no extra checks on all updates)
+        if (_claimType == LayerClaimType.EXCLUSIVE) {
             layerClaimState[_user][_poolId][_layerId] = _claimType;
             emit LayerStateUpdated(_user, _poolId, _layerId, _claimType);
         }
 
-        claimDates[_stakeId][_strategyId] = _claimDay;
-        emit DirectClaimRecorded(_stakeId, _strategyId, _claimDay);
+        claimDates[_stakeId][_poolId][_strategyId] = _claimDay;
+        emit ClaimRecorded(_stakeId, _strategyId, _claimDay);
     }
 
     // ===================================================================
@@ -106,16 +109,17 @@ contract ClaimsJournal is AccessControl {
 
     function getLayerClaimState(
         address _user,
-        uint32 _poolId,
-        uint8 _layerId
+        uint256 _poolId,
+        uint256 _layerId
     ) external view returns (LayerClaimType) {
         return layerClaimState[_user][_poolId][_layerId];
     }
 
     function getLastClaimDay(
         bytes32 _stakeId,
-        uint32 _strategyId
+        uint256 _poolId,
+        uint256 _strategyId
     ) external view returns (uint16) {
-        return claimDates[_stakeId][_strategyId];
+        return claimDates[_stakeId][_poolId][_strategyId];
     }
 }

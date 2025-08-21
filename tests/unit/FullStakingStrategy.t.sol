@@ -106,9 +106,9 @@ contract FullStakingStrategyTest is Test {
     bytes32 public stakeId;
 
     uint16 public constant GRACE_PERIOD = 14; // 14 days
-    uint16 public constant PARENT_POOL_START_DAY = 1;
-    uint16 public constant PARENT_POOL_END_DAY = 90;
-    uint256 public constant TOTAL_REWARD_AMOUNT = 1_000_000 * 1e18;
+    uint16 public constant POOL_START_DAY = 0;
+    uint16 public constant POOL_END_DAY = 90;
+    uint256 public constant TOTAL_REWARD_AMOUNT = 1_000_000 ether;
 
     function setUp() public {
         mockRewardToken = new MockERC20("RewardToken", "RWT");
@@ -135,19 +135,23 @@ contract FullStakingStrategyTest is Test {
         );
 
         // Assume total weight from 2 eligible users (1000 + 500)
-        uint128 totalPoolWeight = 1500;
+        uint128 totalPoolWeight = 1500 * 90;
 
         uint256 reward = strategy.calculateReward(
             user,
             stake,
             totalPoolWeight,
             TOTAL_REWARD_AMOUNT,
-            PARENT_POOL_START_DAY,
-            PARENT_POOL_END_DAY
+            POOL_START_DAY,
+            POOL_END_DAY,
+            0
         );
+
+        assertEq(POOL_END_DAY - POOL_START_DAY, 90);
+
         // Expected reward = (user_weight / total_weight) * total_reward
         // (1000 / 1500) * 1_000_000 = 666,666.66...
-        assertEq(reward, (1000 * TOTAL_REWARD_AMOUNT) / totalPoolWeight);
+        assertEq(reward, (1000 * 90 * TOTAL_REWARD_AMOUNT) / totalPoolWeight);
     }
 
     function test_CalculateReward_Eligible_StakedOnLastGraceDayHeldToEnd()
@@ -159,17 +163,39 @@ contract FullStakingStrategyTest is Test {
             stakeId
         );
 
-        uint128 totalPoolWeight = 1000; // Only one user eligible
+        uint128 totalPoolWeight = 1000 * 90; // Only one user eligible
 
         uint256 reward = strategy.calculateReward(
             user,
             stake,
             totalPoolWeight,
             TOTAL_REWARD_AMOUNT,
-            PARENT_POOL_START_DAY,
-            PARENT_POOL_END_DAY
+            POOL_START_DAY,
+            POOL_END_DAY,
+            0
         );
         assertEq(reward, TOTAL_REWARD_AMOUNT); // Full reward
+    }
+
+    function test_CalculateReward_NotEligible_AlreadyClaimed() public {
+        // Stake starts on day 14 (last day of grace period), held until end
+        mockStakingStorage.mockStake(stakeId, user, 1000, 14, 0, 0, 0);
+        IStakingStorage.Stake memory stake = mockStakingStorage.getStake(
+            stakeId
+        );
+
+        uint128 totalPoolWeight = 1000 * 90; // Only one user eligible
+
+        uint256 reward = strategy.calculateReward(
+            user,
+            stake,
+            totalPoolWeight,
+            TOTAL_REWARD_AMOUNT,
+            POOL_START_DAY,
+            POOL_END_DAY,
+            2 // Claimed 2 days ago
+        );
+        assertEq(reward, 0); // 0 reward
     }
 
     function test_CalculateReward_NotEligible_UnstakedOnEndDay() public {
@@ -185,8 +211,9 @@ contract FullStakingStrategyTest is Test {
             stake,
             totalPoolWeight,
             TOTAL_REWARD_AMOUNT,
-            PARENT_POOL_START_DAY,
-            PARENT_POOL_END_DAY
+            POOL_START_DAY,
+            POOL_END_DAY,
+            0
         );
         assertEq(reward, 0);
     }
@@ -198,14 +225,15 @@ contract FullStakingStrategyTest is Test {
             stakeId
         );
 
-        uint128 totalPoolWeight = 1000;
+        uint128 totalPoolWeight = 1000 * 90;
         uint256 reward = strategy.calculateReward(
             user,
             stake,
             totalPoolWeight,
             TOTAL_REWARD_AMOUNT,
-            PARENT_POOL_START_DAY,
-            PARENT_POOL_END_DAY
+            POOL_START_DAY,
+            POOL_END_DAY,
+            0
         );
         assertEq(reward, TOTAL_REWARD_AMOUNT);
     }
@@ -222,8 +250,9 @@ contract FullStakingStrategyTest is Test {
             stake,
             totalPoolWeight,
             TOTAL_REWARD_AMOUNT,
-            PARENT_POOL_START_DAY,
-            PARENT_POOL_END_DAY
+            POOL_START_DAY,
+            POOL_END_DAY,
+            0
         );
         assertEq(reward, 0);
     }

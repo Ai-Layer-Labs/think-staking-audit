@@ -41,8 +41,10 @@ contract MockSimpleStrategy is IRewardStrategy, AccessControl {
     }
 
     function calculateReward(
-        address, // user
+        address user, // user
         IStakingStorage.Stake calldata stake,
+        uint256 totalPoolWeight,
+        uint256 totalRewardAmount,
         uint16 poolStartDay,
         uint16 poolEndDay,
         uint16 lastClaimDay
@@ -101,6 +103,7 @@ contract RewardManagerTest is Test {
     address public manager = makeAddr("MANAGER");
     address public controller = makeAddr("CONTROLLER");
     address public user = makeAddr("USER");
+    address public multisig = makeAddr("MULTISIG");
 
     // --- IDs ---
     uint256 public constant POOL_ID = 1;
@@ -143,6 +146,7 @@ contract RewardManagerTest is Test {
         rewardManager = new RewardManager(
             admin,
             manager,
+            multisig,
             mockStakingStorage,
             strategiesRegistry,
             claimsJournal,
@@ -172,9 +176,8 @@ contract RewardManagerTest is Test {
 
         // Create a pool (e.g., from day 10 to day 100)
         vm.warp(10 days); // Set current time to day 10
-        uint256 poolId = poolManager.upsertPool(0, 11, 100, 0);
+        uint256 poolId = poolManager.upsertPool(0, 10, 100, 0);
         assertEq(poolId, POOL_ID, "Pool ID mismatch");
-        poolManager.announcePool(poolId);
 
         // Assign strategies to pool layers
         poolManager.assignStrategyToPool(
@@ -211,6 +214,8 @@ contract RewardManagerTest is Test {
             1_000_000 ether
         );
 
+        poolManager.announcePool(poolId);
+
         // Create a stake for the user, starting on day 10
         vm.stopPrank();
 
@@ -240,19 +245,54 @@ contract RewardManagerTest is Test {
 
     function test_ClaimReward_Success_DependentStrategy() public {
         // --- Setup ---
-        vm.warp(101 days);
+        vm.warp(167 days);
         vm.prank(controller);
-        poolManager.setPoolTotalStakeWeight(POOL_ID, 2000 * 1e18);
+        poolManager.setPoolTotalStakeWeight(POOL_ID, 1000 * 1e18 * 90);
+
+        assertEq(
+            rewardManager.rewardAssignedToPool(POOL_ID, STRATEGY_ID_0),
+            1_000_000 ether,
+            "Reward assigned to pool mismatch"
+        );
+
+        assertEq(
+            rewardToken.balanceOf(address(rewardManager)),
+            2_000_000 ether,
+            "RewardManager balance mismatch"
+        );
+
+        assertEq(
+            rewardToken.balanceOf(user),
+            0,
+            "User initial balance mismatch"
+        );
+
+        uint256 calculation = rewardManager.calculateReward(
+            user,
+            stakeId,
+            POOL_ID,
+            STRATEGY_ID_0
+        );
+        assertEq(
+            calculation,
+            1_000_000 ether,
+            "Should the the entire pool reward"
+        );
 
         // --- Action ---
         vm.prank(user);
         rewardManager.claimReward(stakeId, POOL_ID, STRATEGY_ID_0);
 
         // --- Assertions ---
-        assertEq(rewardToken.balanceOf(user), (1_000_000 * 1e18) / 2);
+        assertEq(
+            rewardToken.balanceOf(user),
+            (1_000_000 * 1e18),
+            "User balance mismatch"
+        );
         assertEq(
             claimsJournal.getLastClaimDay(stakeId, POOL_ID, STRATEGY_ID_0),
-            101
+            167,
+            "Last claim day mismatch"
         );
     }
 
@@ -260,7 +300,7 @@ contract RewardManagerTest is Test {
         // --- Setup ---
         vm.warp(101 days);
         vm.prank(controller);
-        poolManager.setPoolTotalStakeWeight(POOL_ID, 1000 * 1e18);
+        poolManager.setPoolTotalStakeWeight(POOL_ID, 1000 * 1e18 * 90);
 
         // First claim
         vm.prank(user);
@@ -269,10 +309,7 @@ contract RewardManagerTest is Test {
 
         // --- Action ---
         vm.expectRevert(
-            abi.encodeWithSelector(
-                RewardErrors.RewardAlreadyClaimed.selector,
-                0
-            )
+            abi.encodeWithSelector(RewardErrors.NoRewardToClaim.selector)
         );
         vm.prank(user);
         rewardManager.claimReward(stakeId, POOL_ID, STRATEGY_ID_0);
@@ -281,14 +318,15 @@ contract RewardManagerTest is Test {
     function test_ClaimReward_Success_IndependentStrategy() public {
         // --- Setup ---
         vm.warp(20 days); // 10 days after stake started
-
+        vm.prank(controller);
+        poolManager.setPoolLiveWeight(POOL_ID, 1000 ether * 20);
         // --- Action ---
         vm.prank(user);
         rewardManager.claimReward(stakeId, POOL_ID, STRATEGY_ID_1);
 
         // --- Assertions ---
-        // Stake is from day 10, but pool starts on day 11. So reward days = 20 - 11 = 9.
-        uint256 expectedReward = uint256(1000 ether * 10_000 * 9) /
+        // Stake is from day 10, but pool starts on day 10. So reward days = 20 - 10 = 10.
+        uint256 expectedReward = uint256(1000 ether * 10_000 * 10) /
             (100_000 * 365);
         assertApproxEqAbs(rewardToken.balanceOf(user), expectedReward, 1e15);
         assertEq(
@@ -319,7 +357,7 @@ contract RewardManagerTest is Test {
         // User claims the exclusive reward
         vm.warp(101 days);
         vm.prank(controller);
-        poolManager.setPoolTotalStakeWeight(POOL_ID, 1000 * 1e18);
+        poolManager.setPoolTotalStakeWeight(POOL_ID, 1000 * 1e18 * 90);
         vm.prank(user);
         rewardManager.claimReward(stakeId, POOL_ID, STRATEGY_ID_0);
 
@@ -338,13 +376,16 @@ contract RewardManagerTest is Test {
     function test_CalculateRewardsForPool() public {
         // --- Setup ---
         // The main setup is done in setUp()
-        // We have a pool from day 11 to 100.
+        // We have a pool from day 10 to 100.
         // Stake was created on day 10.
         // Strategy 0 (FullStaking) is on layer 0.
         // Strategy 1 (Simple APR) is on layer 1.
 
         // --- Test Layer 1 (POOL_SIZE_INDEPENDENT) ---
         vm.warp(25 days); // 15 days of staking for reward calculation
+
+        vm.prank(controller);
+        poolManager.setPoolLiveWeight(POOL_ID, 1000 * 1e18 * 15);
 
         (
             uint256[] memory strategyIds1,
@@ -365,10 +406,10 @@ contract RewardManagerTest is Test {
         );
 
         // Expected reward = (stake * APR * days) / (100_000 * 365)
-        // Stake is from day 10, but pool starts on day 11. So reward days = 25 - 11 = 14.
+        // Stake is from day 10, and pool starts on day 10. So reward days = 25 - 10 = 15.
         uint256 stakeAmount = 1000 ether;
         uint256 apr = 10_000;
-        uint16 numDays = 14;
+        uint16 numDays = 15;
         uint256 expectedReward1 = (stakeAmount * apr * numDays) /
             (100_000 * 365);
         assertApproxEqAbs(
@@ -381,7 +422,7 @@ contract RewardManagerTest is Test {
         // --- Test Layer 0 (POOL_SIZE_DEPENDENT) ---
         vm.warp(101 days); // Pool has ended
         vm.prank(controller);
-        poolManager.setPoolTotalStakeWeight(POOL_ID, 2000 ether); // User's stake is 1000 ether
+        poolManager.setPoolTotalStakeWeight(POOL_ID, 2000 * 90 ether); // User's stake is 1000 ether
 
         (
             uint256[] memory strategyIds0,
@@ -419,7 +460,7 @@ contract RewardManagerTest is Test {
         // 1. Finalize conditions for both claims
         vm.warp(101 days); // Pool ended
         vm.prank(controller);
-        poolManager.setPoolTotalStakeWeight(POOL_ID, 2000 ether); // User has 1000 ether stake
+        poolManager.setPoolTotalStakeWeight(POOL_ID, 2000 ether * 90); // User has 1000 ether stake
 
         // 2. Calculate expected rewards for each claim individually
         // Dependent reward
@@ -428,8 +469,7 @@ contract RewardManagerTest is Test {
         // Independent reward
         uint256 stakeAmount = 1000 ether;
         uint256 apr = 10_000;
-        // Pool is 11-100. Stake is from day 10. Overlap is 100 - 11 = 89 days.
-        uint16 numDays = 89;
+        uint16 numDays = 90;
         uint256 expectedReward1 = (stakeAmount * apr * numDays) /
             (100_000 * 365);
 
@@ -475,6 +515,9 @@ contract RewardManagerTest is Test {
 
     function test_Pausable_AccessControl() public {
         bytes32 managerRole = rewardManager.MANAGER_ROLE();
+
+        vm.prank(controller);
+        poolManager.setPoolLiveWeight(POOL_ID, 1000 ether);
 
         // 1. Test that a non-manager cannot pause or unpause
         vm.prank(user);
@@ -548,10 +591,10 @@ contract RewardManagerTest is Test {
             strategyIds
         );
 
-        uint256 expectedReward0 = (1000 ether * 1_000_000 ether) / (2000 ether);
-        uint256 expectedReward1 = (uint256(1000 ether * 10_000 * 89) /
+        uint256 expectedReward0 = (1000 ether * 90 * 1_000_000 ether) /
+            (2000 ether);
+        uint256 expectedReward1 = (uint256(1000 ether * 10_000 * 90) /
             (100_000 * 365));
-
         assertEq(rewards.length, 2, "Should return 2 reward amounts");
         assertEq(
             rewards[0],
@@ -590,5 +633,34 @@ contract RewardManagerTest is Test {
         );
         rewardManager.setClaimsJournal(newClaimsJournal);
         vm.stopPrank();
+    }
+
+    function test_AssignRewardToPool_Success() public {
+        uint256 assignAmount = 123 ether;
+
+        vm.prank(manager);
+        uint256 poolId = poolManager.upsertPool(0, 10, 100, 0);
+
+        // Assign rewards to a pool
+        vm.prank(manager);
+        rewardManager.assignRewardToPool(poolId, STRATEGY_ID_1, assignAmount);
+
+        // Assert that the mapping is updated
+        assertEq(
+            rewardManager.rewardAssignedToPool(poolId, STRATEGY_ID_1),
+            assignAmount,
+            "Reward assigned to pool mismatch"
+        );
+
+        vm.prank(manager);
+        poolManager.announcePool(poolId);
+
+        vm.prank(manager);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                RewardErrors.PoolHasAlreadyBeenAnnounced.selector
+            )
+        );
+        rewardManager.assignRewardToPool(poolId, STRATEGY_ID_1, assignAmount);
     }
 }

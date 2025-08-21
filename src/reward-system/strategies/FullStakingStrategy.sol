@@ -43,34 +43,21 @@ contract FullStakingStrategy is IRewardStrategy {
         uint256 totalPoolWeight,
         uint256 totalRewardAmount,
         uint16 poolStartDay,
-        uint16 poolEndDay
+        uint16 poolEndDay,
+        uint16 lastClaimDay
     ) external view returns (uint256) {
-        if (totalPoolWeight == 0) {
+        if (
+            lastClaimDay > 0 || // 1. Not claimed yet.
+            totalPoolWeight == 0 || // 2. Pool has it's weight calculated.
+            stake.stakeDay > (poolStartDay + gracePeriod) || // 3. Staked within grace period.
+            // 4. Unstaked before the pool end day.
+            (stake.unstakeDay > 0 && stake.unstakeDay <= poolEndDay)
+        ) {
             return 0;
         }
 
-        // Eligibility check:
-        // 1. Staked within grace period.
-        // 2. Held until (or past) the pool end day.
-        bool isEligible = stake.stakeDay <= (poolStartDay + gracePeriod) &&
-            (stake.unstakeDay == 0 || stake.unstakeDay >= poolEndDay);
-
-        if (!isEligible) {
-            return 0;
-        }
-
-        uint256 userWeight = stake.amount;
+        uint256 userWeight = stake.amount * 90;
 
         return (userWeight * totalRewardAmount) / totalPoolWeight;
-    }
-
-    function calculateReward(
-        address, // user
-        IStakingStorage.Stake calldata, // stake
-        uint16, // lastClaimDay
-        uint16, // poolStartDay
-        uint16 // poolEndDay
-    ) external pure returns (uint256) {
-        revert("MethodNotSupported");
     }
 }
