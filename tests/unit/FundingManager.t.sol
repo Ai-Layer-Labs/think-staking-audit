@@ -42,22 +42,13 @@ contract MockRewardStrategy is IRewardStrategy {
     }
 
     function calculateReward(
-        address user,
-        IStakingStorage.Stake calldata stake,
-        uint16 poolStartDay,
-        uint16 poolEndDay,
-        uint16 lastClaimDay
-    ) external view returns (uint256) {
-        revert("Not implemented");
-    }
-
-    function calculateReward(
-        address user,
+        address user, // user
         IStakingStorage.Stake calldata stake,
         uint256 totalPoolWeight,
         uint256 totalRewardAmount,
         uint16 poolStartDay,
-        uint16 poolEndDay
+        uint16 poolEndDay,
+        uint16 lastClaimDay
     ) external view returns (uint256) {
         revert("Not implemented");
     }
@@ -73,9 +64,10 @@ contract FundingManagerTest is Test {
     address admin = makeAddr("admin");
     address manager = makeAddr("manager");
     address user = makeAddr("user");
+    address multisig = makeAddr("multisig");
 
+    uint32 constant STRATEGY_ID_0 = 0;
     uint32 constant STRATEGY_ID_1 = 1;
-    uint32 constant STRATEGY_ID_2 = 2;
 
     function setUp() public {
         vm.prank(admin);
@@ -95,17 +87,16 @@ contract FundingManagerTest is Test {
         );
 
         vm.prank(admin);
-        fundingManager = new FundingManager(admin, manager, strategiesRegistry);
+        fundingManager = new FundingManager(
+            admin,
+            manager,
+            multisig,
+            strategiesRegistry
+        );
 
         vm.startPrank(manager);
-        strategiesRegistry.registerStrategy(
-            STRATEGY_ID_1,
-            address(mockStrategy1)
-        );
-        strategiesRegistry.registerStrategy(
-            STRATEGY_ID_2,
-            address(mockStrategy2)
-        );
+        strategiesRegistry.registerStrategy(address(mockStrategy1));
+        strategiesRegistry.registerStrategy(address(mockStrategy2));
 
         // Mint some tokens to the manager for funding
         rewardToken.mint(manager, 1_000_000 ether);
@@ -148,19 +139,47 @@ contract FundingManagerTest is Test {
 
     function test_WithdrawStrategy_Success() public {
         uint256 fundAmount = 100 ether;
+
+        assertEq(
+            rewardToken.balanceOf(address(manager)),
+            1000000 ether,
+            "Manager token balance is not enough"
+        );
+
         vm.startPrank(manager);
         rewardToken.approve(address(fundingManager), fundAmount);
         fundingManager.fundStrategy(STRATEGY_ID_1, fundAmount);
         vm.stopPrank();
 
+        assertEq(
+            fundingManager.strategyBalances(STRATEGY_ID_1),
+            fundAmount,
+            "Strategy balance mismatch"
+        );
+
+        assertEq(
+            rewardToken.balanceOf(address(fundingManager)),
+            fundAmount,
+            "Strategy Contract balance mismatch"
+        );
+
         uint256 withdrawAmount = 50 ether;
-        vm.startPrank(manager);
-        fundingManager.withdrawStrategy(STRATEGY_ID_1, withdrawAmount);
+        vm.startPrank(multisig);
+        fundingManager.withdrawStrategy(
+            STRATEGY_ID_1,
+            withdrawAmount,
+            multisig
+        );
         vm.stopPrank();
         assertEq(
             fundingManager.strategyBalances(STRATEGY_ID_1),
             fundAmount - withdrawAmount,
             "Strategy balance after withdraw mismatch"
+        );
+        assertEq(
+            rewardToken.balanceOf(multisig),
+            withdrawAmount,
+            "Reward token balance mismatch"
         );
     }
 
@@ -172,12 +191,16 @@ contract FundingManagerTest is Test {
         fundingManager.fundStrategy(STRATEGY_ID_1, fundAmount);
         vm.stopPrank();
         uint256 withdrawAmount = 200 ether;
-        vm.prank(manager);
+        vm.prank(multisig);
         vm.expectRevert(RewardErrors.InsufficientStrategyBalance.selector);
-        fundingManager.withdrawStrategy(STRATEGY_ID_1, withdrawAmount);
+        fundingManager.withdrawStrategy(
+            STRATEGY_ID_1,
+            withdrawAmount,
+            multisig
+        );
     }
 
-    function test_WithdrawStrategy_Fail_NotManager() public {
+    function test_WithdrawStrategy_Fail_NotMultisig() public {
         uint256 fundAmount = 100 ether;
         vm.startPrank(manager);
         rewardToken.approve(address(fundingManager), fundAmount);
@@ -190,10 +213,14 @@ contract FundingManagerTest is Test {
             abi.encodeWithSelector(
                 AccessControlUnauthorizedAccount.selector,
                 user,
-                keccak256("MANAGER_ROLE")
+                keccak256("MULTISIG_ROLE")
             )
         );
-        fundingManager.withdrawStrategy(STRATEGY_ID_1, withdrawAmount);
+        fundingManager.withdrawStrategy(
+            STRATEGY_ID_1,
+            withdrawAmount,
+            multisig
+        );
         vm.stopPrank();
     }
 
@@ -201,24 +228,24 @@ contract FundingManagerTest is Test {
         uint256 fundAmount1 = 100 ether;
         vm.startPrank(manager);
         rewardToken.approve(address(fundingManager), fundAmount1);
-        fundingManager.fundStrategy(STRATEGY_ID_1, fundAmount1);
+        fundingManager.fundStrategy(STRATEGY_ID_0, fundAmount1);
         vm.stopPrank();
 
         uint256 transferAmount = 50 ether;
         vm.startPrank(manager);
         fundingManager.transferStrategyBalance(
+            STRATEGY_ID_0,
             STRATEGY_ID_1,
-            STRATEGY_ID_2,
             transferAmount
         );
 
         assertEq(
-            fundingManager.strategyBalances(STRATEGY_ID_1),
+            fundingManager.strategyBalances(STRATEGY_ID_0),
             fundAmount1 - transferAmount,
             "Source strategy balance mismatch"
         );
         assertEq(
-            fundingManager.strategyBalances(STRATEGY_ID_2),
+            fundingManager.strategyBalances(STRATEGY_ID_1),
             transferAmount,
             "Destination strategy balance mismatch"
         );
@@ -236,7 +263,7 @@ contract FundingManagerTest is Test {
         vm.expectRevert(RewardErrors.InsufficientStrategyBalance.selector);
         fundingManager.transferStrategyBalance(
             STRATEGY_ID_1,
-            STRATEGY_ID_2,
+            STRATEGY_ID_0,
             transferAmount
         );
     }
@@ -259,8 +286,34 @@ contract FundingManagerTest is Test {
         );
         fundingManager.transferStrategyBalance(
             STRATEGY_ID_1,
-            STRATEGY_ID_2,
+            STRATEGY_ID_0,
             transferAmount
         );
+    }
+
+    function test_FundStrategy_Fail_StrategyNotExist() public {
+        uint256 amount = 100 ether;
+        uint256 nonExistentStrategyId = 999; // Assuming 999 does not exist
+
+        vm.startPrank(manager);
+        rewardToken.approve(address(fundingManager), amount);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                RewardErrors.StrategyNotExist.selector,
+                nonExistentStrategyId
+            )
+        );
+        fundingManager.fundStrategy(nonExistentStrategyId, amount);
+        vm.stopPrank();
+    }
+
+    function test_FundStrategy_Fail_AmountMustBeGreaterThanZero() public {
+        uint256 amount = 0; // Zero amount
+
+        vm.startPrank(manager);
+        rewardToken.approve(address(fundingManager), amount); // Approve 0 is fine
+        vm.expectRevert(RewardErrors.AmountMustBeGreaterThanZero.selector);
+        fundingManager.fundStrategy(STRATEGY_ID_1, amount);
+        vm.stopPrank();
     }
 }

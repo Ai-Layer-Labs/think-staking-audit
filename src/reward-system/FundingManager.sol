@@ -18,23 +18,25 @@ contract FundingManager is AccessControl {
     using SafeERC20 for IERC20;
 
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+    bytes32 public constant MULTISIG_ROLE = keccak256("MULTISIG_ROLE");
 
     StrategiesRegistry public immutable strategiesRegistry;
 
     // Balance tracking for PRE_FUNDED direct strategies
-    mapping(uint32 => uint256) public strategyBalances;
+    mapping(uint256 => uint256) public strategyBalances;
 
-    event StrategyFunded(uint32 indexed strategyId, uint256 amount);
-    event StrategyWithdrawn(uint32 indexed strategyId, uint256 amount);
+    event StrategyFunded(uint256 indexed strategyId, uint256 amount);
+    event StrategyWithdrawn(uint256 indexed strategyId, uint256 amount);
 
     constructor(
         address admin,
         address manager,
+        address multisig,
         StrategiesRegistry _strategiesRegistry
     ) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(MANAGER_ROLE, manager);
-
+        _grantRole(MULTISIG_ROLE, multisig);
         strategiesRegistry = _strategiesRegistry;
     }
 
@@ -45,7 +47,7 @@ contract FundingManager is AccessControl {
      * @param _amount The amount of reward tokens to deposit.
      */
     function fundStrategy(
-        uint32 _strategyId,
+        uint256 _strategyId,
         uint256 _amount
     ) external onlyRole(MANAGER_ROLE) {
         address strategyAddress = strategiesRegistry.getStrategyAddress(
@@ -53,7 +55,7 @@ contract FundingManager is AccessControl {
         );
         require(
             strategyAddress != address(0),
-            RewardErrors.StrategyNotRegistered(_strategyId)
+            RewardErrors.StrategyNotExist(_strategyId)
         );
 
         IRewardStrategy strategy = IRewardStrategy(strategyAddress);
@@ -72,18 +74,39 @@ contract FundingManager is AccessControl {
     }
 
     function withdrawStrategy(
-        uint32 _strategyId,
-        uint256 _amount
-    ) external onlyRole(MANAGER_ROLE) {
+        uint256 _strategyId,
+        uint256 _amount,
+        address _to
+    ) external onlyRole(MULTISIG_ROLE) {
         _decreaseStrategyBalance(_strategyId, _amount);
+        address rewardToken = IRewardStrategy(
+            strategiesRegistry.getStrategyAddress(_strategyId)
+        ).getRewardToken();
+
+        IERC20(rewardToken).safeTransfer(_to, _amount);
+
         emit StrategyWithdrawn(_strategyId, _amount);
     }
 
     function transferStrategyBalance(
-        uint32 _fromStrategyId,
-        uint32 _toStrategyId,
+        uint256 _fromStrategyId,
+        uint256 _toStrategyId,
         uint256 _amount
     ) external onlyRole(MANAGER_ROLE) {
+        // require they have the same reward token
+        address fromStrategyAddress = strategiesRegistry.getStrategyAddress(
+            _fromStrategyId
+        );
+        address fromRewardToken = IRewardStrategy(fromStrategyAddress)
+            .getRewardToken();
+        address toStrategyAddress = strategiesRegistry.getStrategyAddress(
+            _toStrategyId
+        );
+        address toRewardToken = IRewardStrategy(toStrategyAddress)
+            .getRewardToken();
+
+        require(fromRewardToken == toRewardToken, "Different reward tokens");
+
         _decreaseStrategyBalance(_fromStrategyId, _amount);
         _increaseStrategyBalance(_toStrategyId, _amount);
     }
@@ -94,7 +117,7 @@ contract FundingManager is AccessControl {
      * @param _amount The amount to withdraw.
      */
     function _decreaseStrategyBalance(
-        uint32 _strategyId,
+        uint256 _strategyId,
         uint256 _amount
     ) internal {
         uint256 currentBalance = strategyBalances[_strategyId];
@@ -106,7 +129,7 @@ contract FundingManager is AccessControl {
     }
 
     function _increaseStrategyBalance(
-        uint32 _strategyId,
+        uint256 _strategyId,
         uint256 _amount
     ) internal {
         strategyBalances[_strategyId] += _amount;

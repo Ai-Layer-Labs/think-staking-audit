@@ -108,7 +108,7 @@ contract StandardStakingStrategyTest is Test {
     function setUp() public {
         mockRewardToken = new MockERC20("RewardToken", "RWT");
         mockStakingStorage = new MockStakingStorageForStrategy();
-        strategy = new StandardStakingStrategy(address(mockRewardToken), false); // Re-staking not allowed by default
+        strategy = new StandardStakingStrategy(address(mockRewardToken));
         stakeId = _generateStakeId(user, 0);
     }
 
@@ -126,14 +126,15 @@ contract StandardStakingStrategyTest is Test {
         );
 
         // Pool from day 1 to 30
-        uint128 totalPoolWeight = 1000 * 30; // One user, full period
+        uint128 totalPoolWeight = 1000 * 29; // One user, full period
         uint256 reward = strategy.calculateReward(
             user,
             stake,
             totalPoolWeight,
             TOTAL_REWARD_AMOUNT,
             1,
-            30
+            30,
+            0
         );
         assertEq(reward, TOTAL_REWARD_AMOUNT);
     }
@@ -144,17 +145,18 @@ contract StandardStakingStrategyTest is Test {
             stakeId
         );
 
-        // Pool from day 1 to 30. User's weight is 1000 * 21. Assume another user has weight of 9000.
-        uint128 totalPoolWeight = 1000 * 21 + 9000;
+        // Pool from day 1 to 30. User's weight is 1000 * 20. Assume another user has weight of 9000.
+        uint128 totalPoolWeight = 1000 * 20 + 9000;
         uint256 reward = strategy.calculateReward(
             user,
             stake,
             totalPoolWeight,
             TOTAL_REWARD_AMOUNT,
             1,
-            30
+            30,
+            0
         );
-        uint256 expectedReward = (uint256(1000 * 21) * TOTAL_REWARD_AMOUNT) /
+        uint256 expectedReward = (uint256(1000 * 20) * TOTAL_REWARD_AMOUNT) /
             totalPoolWeight;
         assertEq(reward, expectedReward);
     }
@@ -174,7 +176,8 @@ contract StandardStakingStrategyTest is Test {
             1000,
             TOTAL_REWARD_AMOUNT,
             1,
-            30
+            30,
+            0
         ); // Pool from day 1 to 30
         assertEq(reward, 0); // Should be 0 due to withdrawal
     }
@@ -191,7 +194,8 @@ contract StandardStakingStrategyTest is Test {
             1000,
             TOTAL_REWARD_AMOUNT,
             1,
-            30
+            30,
+            0
         ); // Pool from day 1 to 30
         assertEq(reward, 0);
     }
@@ -208,7 +212,8 @@ contract StandardStakingStrategyTest is Test {
             1000,
             TOTAL_REWARD_AMOUNT,
             1,
-            30
+            30,
+            0
         ); // Pool from day 1 to 30
         assertEq(reward, 0);
     }
@@ -225,7 +230,8 @@ contract StandardStakingStrategyTest is Test {
             1000,
             TOTAL_REWARD_AMOUNT,
             10,
-            20
+            20,
+            0
         ); // Pool from day 10 to 20
         assertEq(reward, 0);
     }
@@ -242,7 +248,26 @@ contract StandardStakingStrategyTest is Test {
             0,
             TOTAL_REWARD_AMOUNT,
             1,
-            30
+            30,
+            0
+        );
+        assertEq(reward, 0);
+    }
+
+    function test_CalculateReward_NotEligible_AlreadyClaimed() public {
+        mockStakingStorage.mockStake(stakeId, user, 1000, 1, 0, 0, 0);
+        IStakingStorage.Stake memory stake = mockStakingStorage.getStake(
+            stakeId
+        );
+
+        uint256 reward = strategy.calculateReward(
+            user,
+            stake,
+            1000,
+            TOTAL_REWARD_AMOUNT,
+            1,
+            30,
+            2
         );
         assertEq(reward, 0);
     }

@@ -13,7 +13,6 @@ contract StrategiesRegistryTest is Test {
     address public admin = address(0xA1);
     address public manager = address(0xB1);
     address public strategyAddress = address(0xD1);
-    uint16 constant STRATEGY_ID = 1;
 
     function setUp() public {
         registry = new StrategiesRegistry(admin, manager);
@@ -21,36 +20,69 @@ contract StrategiesRegistryTest is Test {
 
     function test_RegisterAndGetStrategy() public {
         vm.startPrank(manager);
-        registry.registerStrategy(STRATEGY_ID, strategyAddress);
+        uint256 strategyId = registry.registerStrategy(strategyAddress);
+        assertEq(strategyId, 0);
         vm.stopPrank();
 
-        assertTrue(registry.isStrategyRegistered(STRATEGY_ID));
-        assertEq(registry.getStrategyAddress(STRATEGY_ID), strategyAddress);
+        assertEq(registry.getStrategyAddress(0), strategyAddress);
+        assertTrue(registry.isStrategyRegistered(0));
     }
 
-    function test_TC_SR01_RemoveStrategy_Success() public {
+    function test_TC_SR01_DisableStrategy_Success() public {
         vm.startPrank(manager);
-        registry.registerStrategy(STRATEGY_ID, strategyAddress);
+        registry.registerStrategy(strategyAddress);
 
-        assertTrue(registry.isStrategyRegistered(STRATEGY_ID));
+        assertTrue(registry.isStrategyRegistered(0));
 
-        registry.removeStrategy(STRATEGY_ID);
+        registry.disableStrategy(0);
+
+        assertFalse(registry.getStrategyStatus(0));
+        assertEq(
+            registry.getStrategyStatus(0),
+            false,
+            "Strategy should be disabled"
+        );
         vm.stopPrank();
-
-        assertFalse(registry.isStrategyRegistered(STRATEGY_ID));
-        assertEq(registry.getStrategyAddress(STRATEGY_ID), address(0));
     }
 
-    function test_RemoveStrategy_Fail_NotRegistered() public {
+    function test_DisableStrategy_Fail_NotRegistered() public {
         vm.startPrank(manager);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                RewardErrors.StrategyNotRegistered.selector,
-                STRATEGY_ID
-            )
+            abi.encodeWithSelector(RewardErrors.StrategyNotExist.selector, 0)
         );
-        registry.removeStrategy(STRATEGY_ID);
+        registry.disableStrategy(0);
         vm.stopPrank();
+    }
+
+    function test_TC_SR02_EnableStrategy_Success() public {
+        vm.startPrank(manager);
+        uint256 strategyId = registry.registerStrategy(strategyAddress); // Get the actual ID
+        assertEq(strategyId, 0); // Ensure it's ID 0 for consistency
+
+        // Initially, it should be enabled
+        assertTrue(registry.getStrategyStatus(strategyId), "Strategy should be enabled initially");
+        uint256[] memory activeStrategiesInitial = registry.getListOfActiveStrategies();
+        assertEq(activeStrategiesInitial.length, 1, "Should have 1 active strategy initially");
+        assertEq(activeStrategiesInitial[0], strategyId, "Initial active strategy ID mismatch");
+
+        // Disable the strategy
+        registry.disableStrategy(strategyId);
+        assertFalse(registry.getStrategyStatus(strategyId), "Strategy should be disabled after disableCall");
+        uint256[] memory activeStrategiesAfterDisable = registry.getListOfActiveStrategies();
+        assertEq(activeStrategiesAfterDisable.length, 0, "Should have 0 active strategies after disable");
+
+        // Enable the strategy
+        registry.enableStrategy(strategyId);
+        assertTrue(registry.getStrategyStatus(strategyId), "Strategy should be enabled after enableCall");
+        uint256[] memory activeStrategiesAfterEnable = registry.getListOfActiveStrategies();
+        assertEq(activeStrategiesAfterEnable.length, 1, "Should have 1 active strategy after enable");
+        assertEq(activeStrategiesAfterEnable[0], strategyId, "Active strategy ID mismatch after enable");
+
+        vm.stopPrank();
+
+        // Original assertions (still valid)
+        assertTrue(registry.isStrategyRegistered(strategyId), "Strategy should still be registered");
+        assertEq(registry.getStrategyAddress(strategyId), strategyAddress, "Strategy address mismatch");
     }
 
     function test_RegisterStrategy_Fail_NotManager() public {
@@ -63,7 +95,7 @@ contract StrategiesRegistryTest is Test {
                 managerRole
             )
         );
-        registry.registerStrategy(STRATEGY_ID, strategyAddress);
+        registry.registerStrategy(strategyAddress);
         vm.stopPrank();
     }
 }
