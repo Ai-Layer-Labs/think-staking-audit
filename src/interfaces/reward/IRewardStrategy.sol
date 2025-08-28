@@ -13,7 +13,6 @@ interface IRewardStrategy {
 
     function getName() external view returns (string memory);
     function getRewardToken() external view returns (address);
-    function getRewardLayer() external view returns (uint8);
     function getStrategyType() external view returns (StrategyType);
 
     /**

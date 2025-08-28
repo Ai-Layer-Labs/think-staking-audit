@@ -4333,6 +4333,10 @@ contract PoolManager is AccessControl {
         return _hasStarted(poolId);
     }
 
+    function hasAnnounced(uint256 poolId) external view returns (bool) {
+        return _hasAnnounced(poolId);
+    }
+
     /** ------------------------------------------------
      *  ! Internal Helpers
      * ------------------------------------------------ */

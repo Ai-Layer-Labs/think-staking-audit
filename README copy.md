@@ -75,7 +75,7 @@ For a detailed breakdown of all documentation, see the tables below.
 
 ## 🛠️ Technology Stack
 
-- **Smart Contracts**: Solidity 0.8.30
+- **Smart Contracts**: Solidity ^0.8.20
 - **Testing Framework**: Foundry
 - **Security Libraries**: OpenZeppelin
 

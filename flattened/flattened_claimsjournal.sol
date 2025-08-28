@@ -157,6 +157,7 @@ interface IERC165 {
 contract RewardErrors {
     error ControllerAlreadySet();
     error InvalidAddress();
+    error InvalidInputArrays();
 
     // --- RewardManager Errors ---
     error DeclaredRewardZero();
@@ -168,7 +169,6 @@ contract RewardErrors {
     error NoRewardToClaim();
     error RewardAlreadyGranted();
     error InsufficientDepositedFunds(uint256 requested, uint256 available);
-    error RewardAlreadyClaimed(uint256 rewardIndex);
 
     // --- PooldManager Errors ---
     error PoolDoesNotExist(uint256 poolId);
@@ -182,7 +182,7 @@ contract RewardErrors {
     error PoolAlreadyCalculated(uint256 poolId);
     error UserNotEligibleForPool();
     error TotalEligibleWeightIsZero();
-
+    error PoolHasAlreadyBeenAnnounced();
     error PoolNotStarted(uint256 poolId);
 
     // --- Stacking Policy Errors ---
@@ -454,7 +454,7 @@ contract ClaimsJournal is AccessControl, RewardErrors {
         LayerClaimType newStateType
     );
 
-    event DirectClaimRecorded(
+    event ClaimRecorded(
         bytes32 indexed stakeId,
         uint256 indexed strategyId,
         uint256 claimDay
@@ -526,7 +526,7 @@ contract ClaimsJournal is AccessControl, RewardErrors {
         }
 
         claimDates[_stakeId][_poolId][_strategyId] = _claimDay;
-        emit DirectClaimRecorded(_stakeId, _strategyId, _claimDay);
+        emit ClaimRecorded(_stakeId, _strategyId, _claimDay);
     }
 
     // ===================================================================

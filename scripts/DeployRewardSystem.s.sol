@@ -20,6 +20,7 @@ contract DeployRewardSystem is Script {
     // --- Roles ---
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
     bytes32 public constant CONTROLLER_ROLE = keccak256("CONTROLLER_ROLE");
+    bytes32 public constant MULTISIG_ROLE = keccak256("MULTISIG_ROLE");
     bytes32 public constant REWARD_MANAGER_ROLE =
         keccak256("REWARD_MANAGER_ROLE");
 
@@ -32,6 +33,7 @@ contract DeployRewardSystem is Script {
         uint256 adminPk = vm.envUint("ADMIN_PK");
         address admin = vm.envAddress("ADMIN");
         address manager = vm.envAddress("MANAGER");
+        address multisig = vm.envAddress("MULTISIG");
         address controller = vm.envAddress("CONTROLLER"); // For PoolManager
 
         if (
@@ -76,6 +78,7 @@ contract DeployRewardSystem is Script {
         RewardManager rewardManager = new RewardManager(
             admin,
             manager,
+            multisig,
             stakingStorage,
             strategiesRegistry,
             claimsJournal,

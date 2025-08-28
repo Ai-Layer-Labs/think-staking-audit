@@ -108,7 +108,7 @@ contract StandardStakingStrategyTest is Test {
     function setUp() public {
         mockRewardToken = new MockERC20("RewardToken", "RWT");
         mockStakingStorage = new MockStakingStorageForStrategy();
-        strategy = new StandardStakingStrategy(address(mockRewardToken), false); // Re-staking not allowed by default
+        strategy = new StandardStakingStrategy(address(mockRewardToken));
         stakeId = _generateStakeId(user, 0);
     }
 

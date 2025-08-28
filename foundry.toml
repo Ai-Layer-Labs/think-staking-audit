@@ -12,7 +12,7 @@ ast = true
 build_info = true
 extra_output = ["storageLayout"]
 remappings= [
-    "@openzeppelin/=node_modules/@openzeppelin/",
+    "@openzeppelin/=lib/openzeppelin-contracts/",
     "forge-std/=lib/forge-std/src/",
 ]
 

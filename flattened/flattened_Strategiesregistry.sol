@@ -1693,6 +1693,7 @@ library SafeCast {
 contract RewardErrors {
     error ControllerAlreadySet();
     error InvalidAddress();
+    error InvalidInputArrays();
 
     // --- RewardManager Errors ---
     error DeclaredRewardZero();
@@ -1704,7 +1705,6 @@ contract RewardErrors {
     error NoRewardToClaim();
     error RewardAlreadyGranted();
     error InsufficientDepositedFunds(uint256 requested, uint256 available);
-    error RewardAlreadyClaimed(uint256 rewardIndex);
 
     // --- PooldManager Errors ---
     error PoolDoesNotExist(uint256 poolId);
@@ -1718,7 +1718,7 @@ contract RewardErrors {
     error PoolAlreadyCalculated(uint256 poolId);
     error UserNotEligibleForPool();
     error TotalEligibleWeightIsZero();
-
+    error PoolHasAlreadyBeenAnnounced();
     error PoolNotStarted(uint256 poolId);
 
     // --- Stacking Policy Errors ---

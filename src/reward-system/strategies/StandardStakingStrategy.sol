@@ -14,13 +14,12 @@ contract StandardStakingStrategy is IRewardStrategy {
     address public immutable rewardToken;
     bool public immutable isReStakingAllowed;
 
-    uint16 public immutable MINIMUM_REWARDABLE_DURATION = 2;
+    uint16 public immutable MINIMUM_REWARDABLE_DURATION = 7;
 
     error MethodNotSupported();
 
-    constructor(address _rewardToken, bool _isReStakingAllowed) {
+    constructor(address _rewardToken) {
         rewardToken = _rewardToken;
-        isReStakingAllowed = _isReStakingAllowed;
     }
 
     function getName() external pure override returns (string memory) {
@@ -29,10 +28,6 @@ contract StandardStakingStrategy is IRewardStrategy {
 
     function getRewardToken() external view override returns (address) {
         return rewardToken;
-    }
-
-    function getRewardLayer() external pure override returns (uint8) {
-        return 0; // Base Layer
     }
 
     function getStrategyType() external pure override returns (StrategyType) {

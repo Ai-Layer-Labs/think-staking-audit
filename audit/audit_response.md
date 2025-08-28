@@ -87,12 +87,13 @@ Using an average gas cost of 280,000 (and median gas cost is 338,000) per `stake
 follows:
 
 ```
-┌───────────┬────────────────────┬──────────────────┬───────────────────────────────┐
-│ Gas Price │ Total Gas Required │ Total Cost (ETH) │ Total Cost (USD @ $3,000/ETH) │
-├───────────┼────────────────────┼──────────────────┼───────────────────────────────┤
-│ 0.32 Gwei │ ~21.6 billion      │ ~8.54 ETH        │ ~$25,620                      │
-│ 1 Gwei    │ ~21.6 billion      │ ~21.63 ETH       │ ~$64,880                      │
-└───────────┴────────────────────┴──────────────────┴───────────────────────────────┘
+  ┌────────────┬────────────────────┬──────────────────┬──────────────────────────┐
+  │ Gas Price  │ Total Gas Required │ Total Cost (ETH) │ Total (USD @ $2,000/ETH) │
+  ├────────────┼────────────────────┼──────────────────┼──────────────────────────┤
+  │ 0.266 Gwei │ ~21.6 billion      │ ~5.75 ETH        │ ~$11,500                 │
+  │ 0.395 Gwei │ ~21.6 billion      │ ~8.54 ETH        │ ~$17,080                 │
+  │ 1 Gwei     │ ~21.6 billion      │ ~21.63 ETH       │ ~$43,260                 │
+  └────────────┴────────────────────┴──────────────────┴──────────────────────────┘
 ```
 
 **Analysis of Impact & Design Rationale**
@@ -110,16 +111,15 @@ In addition to the prohibitive cost, the impact of a successful exploit is negli
 
 Considering the analysis, we have concluded the following:
 
-1.  The attack is economically infeasible due to the extreme gas cost, ranging from ~$650k to over $3.2M.
+1.  The attack is economically infeasible due to the extreme gas cost, ranging from ~$10k to over $30k.
 2.  The impact of a successful exploit is negligible, as it affects an off-chain statistical value and offers no financial gain to the attacker.
 3.  The underlying data type was an intentional gas optimization.
 
-Given these factors, we formally acknowledge the finding but have made a risk-based decision to accept it without a code modification. The combination
-of an exceptionally high cost to attack and a lack of financial incentive leads us to assess the practical risk as exceptionally low and not justifying a change to the existing storage layout optimizations.
+Given these factors, we formally acknowledge the finding but have made a risk-based decision to accept it with intention to fix this in the later versions of staking system.
 
 **Status:**
 
-- [x] ACKNOWLEDGED.
+- [ ] ACKNOWLEDGED. This will be addressed in the future releases.
 
 <br/><hr/>
 
@@ -189,4 +189,55 @@ This mitigation strategy achieves two primary goals:
 
 **Status:**
 
-- [ ] Resolved
+- [x] Resolved
+
+<br/><hr/>
+
+### L-01: The stakesCounter overflow risk in StakerInfo
+
+**Finding Summary:**
+
+`uint16 stakesCounter;`
+
+**Impact:**
+
+The counters are unique to each user. It seems nearly impossible to reach the uint16 limit of 65,535 operations (stakes and unstakes) over the contract's lifetime.
+
+**Conclusion**
+
+Even the possibility is low, we will address this finding in future releases
+
+**Status:**
+
+- [ ] Acknowledged
+
+<br/><hr/>
+
+### L-02: Permanent \_allStakers growth without removal
+
+**Finding Summary:**
+
+The `_allStakers` set is updated in createStake to include the staker address, however, there is no corresponding removal in removeStake.
+
+A malicious or careless user can exploit this by - Staking and unstaking immediately with multiple
+addresses (bots or new wallet addresses). - Permanently inflating `_allStakers` with inactive or one-time users.
+
+**Impact:**
+
+The `_allStakers` is an EnumerableSet from OpenZeppelin that uses bytes32 under the hood. We believe there is no practical way to harm the system. However, it would be beneficial to reimburse some gas for the unstaking operation to the staker.
+
+**Conclusion**
+
+We will address this finding in future releases
+
+**Status:**
+
+- [ ] Acknowledged
+
+<br/><hr/>
+
+### I-01-10: User Experience and Gas optimisations.
+
+We'll address those in the future release.
+
+- [ ] Acknowledged

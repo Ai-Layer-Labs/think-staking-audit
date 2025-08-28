@@ -29,10 +29,6 @@ contract FullStakingStrategy is IRewardStrategy {
         return rewardToken;
     }
 
-    function getRewardLayer() external pure override returns (uint8) {
-        return 0; // Base Layer
-    }
-
     function getStrategyType() external pure override returns (StrategyType) {
         return StrategyType.POOL_SIZE_DEPENDENT;
     }
