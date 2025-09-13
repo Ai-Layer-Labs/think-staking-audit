@@ -1,0 +1,439 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.30;
+
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
+import "../interfaces/staking/IStakingVaultV2.sol";
+import "../interfaces/reward/IRewardStrategyV2.sol";
+import "../interfaces/staking/IStakingStorageV2.sol"; // For struct definition
+
+import "./ClaimsJournal.sol";
+import "./PoolManager.sol";
+import "./FundingManager.sol";
+
+import "../interfaces/reward/RewardErrors.sol";
+
+/**
+ * @title RewardManagerV2
+ * @author @Tudmotu & Gemini
+ * @notice A stateless orchestrator for all reward claims, now dependent on StakingVaultV2.
+ */
+contract RewardManagerV2 is
+    FundingManager,
+    Pausable,
+    RewardErrors,
+    ReentrancyGuard
+{
+    using SafeERC20 for IERC20;
+
+    // --- Immutable contract dependencies ---
+    IStakingVaultV2 public immutable vault;
+    ClaimsJournal public claimsJournal;
+    PoolManager public immutable poolManager;
+
+    mapping(uint256 poolId => mapping(uint256 strategyId => uint256))
+        public rewardAssignedToPool;
+
+    event RewardClaimed(
+        address indexed user,
+        bytes32 stakeId,
+        uint256 indexed poolId,
+        uint256 indexed strategyId,
+        uint256 rewardAmount,
+        uint16 claimDay
+    );
+
+    constructor(
+        address _admin,
+        address _manager,
+        address _multisig,
+        IStakingVaultV2 _vault,
+        StrategiesRegistry _strategiesRegistry,
+        ClaimsJournal _claimsJournal,
+        PoolManager _poolManager
+    ) FundingManager(_admin, _manager, _multisig, _strategiesRegistry) {
+        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        _grantRole(MANAGER_ROLE, _manager);
+
+        vault = _vault;
+        claimsJournal = _claimsJournal;
+        poolManager = _poolManager;
+    }
+
+    function setClaimsJournal(
+        ClaimsJournal _newClaimsJournal
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        claimsJournal = _newClaimsJournal;
+    }
+
+    function assignRewardToPool(
+        uint256 _poolId,
+        uint256 _strategyId,
+        uint256 _amount
+    ) external onlyRole(MANAGER_ROLE) {
+        require(
+            !poolManager.hasAnnounced(_poolId),
+            RewardErrors.PoolHasAlreadyBeenAnnounced()
+        );
+        rewardAssignedToPool[_poolId][_strategyId] = _amount;
+    }
+
+    function pause() external onlyRole(MANAGER_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(MANAGER_ROLE) {
+        _unpause();
+    }
+
+    function batchClaimReward(
+        bytes32[] calldata stakeIds,
+        uint256[] calldata poolIds,
+        uint256[] calldata strategyIds,
+        bytes[] calldata payloads
+    ) external {
+        require(
+            stakeIds.length == poolIds.length &&
+                stakeIds.length == strategyIds.length,
+            RewardErrors.InvalidInputArrays()
+        );
+
+        for (uint256 i = 0; i < stakeIds.length; i++) {
+            claimReward(stakeIds[i], poolIds[i], strategyIds[i], payloads[i]);
+        }
+    }
+
+    function batchCalculateReward(
+        bytes32[] calldata stakeIds,
+        uint256[] calldata poolIds,
+        uint256[] calldata strategyIds,
+        bytes[] calldata payloads
+    ) external view returns (uint256[] memory) {
+        uint256[] memory estimatedAmounts = new uint256[](stakeIds.length);
+        for (uint256 i = 0; i < stakeIds.length; i++) {
+            (estimatedAmounts[i]) = _calculateReward(
+                vault.getStakerFromId(stakeIds[i]),
+                stakeIds[i],
+                poolIds[i],
+                strategyIds[i],
+                payloads[i]
+            );
+        }
+        return estimatedAmounts;
+    }
+
+    // ===================================================================
+    //                      USER CLAIM FUNCTIONS
+    // ===================================================================
+    function claimReward(
+        bytes32 stakeId,
+        uint256 poolId,
+        uint256 strategyId,
+        bytes calldata payload
+    ) public nonReentrant whenNotPaused {
+        // --- 1. Validation & Data Fetching ---
+        (
+            address staker,
+            address strategyAddress,
+            uint256 layerId
+        ) = _validateAndGetData(stakeId, poolId, strategyId);
+
+        // --- 2. Reward Calculation ---
+        uint256 rewardAmount = _calculateReward(
+            staker,
+            stakeId,
+            poolId,
+            strategyId,
+            payload
+        );
+        require(rewardAmount > 0, RewardErrors.NoRewardToClaim());
+
+        // --- 3. Record Keeping ---
+        _recordClaim(staker, poolId, strategyId, layerId, stakeId);
+
+        // --- 4. Payout ---
+        _payout(staker, strategyId, strategyAddress, rewardAmount);
+
+        // --- 5. Emit Event ---
+        emit RewardClaimed(
+            staker,
+            stakeId,
+            poolId,
+            strategyId,
+            rewardAmount,
+            _getCurrentDay()
+        );
+    }
+
+    function calculateReward(
+        address staker,
+        bytes32 stakeId,
+        uint256 poolId,
+        uint256 strategyId,
+        bytes calldata payload
+    ) external view returns (uint256) {
+        return _calculateReward(staker, stakeId, poolId, strategyId, payload);
+    }
+
+    /**
+     * @notice This function is to be called by FrontEnd UI (mostly),
+     * in order to display list of Pool/stake pairs,
+     * and against each pair, the rewards the user can claim.
+     * Pools can have multiple layers, each layer can have multiple strategies.
+     * Some strategies on the same layer can be exclusive to each other.
+     * UI displays to the user a reward which can be claimed for each strategy.
+     * In case of exclusive strategies, UI displays two or more rewards,
+     * and when user clicks on the reward, FE disable other rewards,
+     * that can not be claimed after user confirmed the selection.
+     * Confirming selection will call `claimReward()` function for the
+     * chosen strategy.
+     *
+     *  Use case example:
+     *  For Pool 1 (cycle 1, 30 days) we have just 1 strategy:
+     *  StandardRewardStrategy on layer 1:
+     *  [1],
+     *  [100], // amount of reward for pool
+     *  [NORMAL]
+     *
+     *  For Pool 4 (90 days) we have just 2 strategies on layer 0:
+     *  FullStaking and Whitelisted:
+     *  [4,5],
+     *  [100,100], // Even if the rewards is the same, the conditions could be different
+     *  [NORMAL, EXCLUSIVE]
+     *
+     * @param stakeId The ID of the stake.
+     * @param poolId The ID of the pool.
+     * @param layerId The ID of the layer.
+     * @return strategyIds An array of strategy IDs.
+     * @return amounts An array of amounts for each strategy.
+     * @return _exclusivity An array of exclusivity for each strategy.
+     */
+    function calculateRewardsForPool(
+        bytes32 stakeId,
+        uint256 poolId,
+        uint256 layerId,
+        bytes calldata payload
+    )
+        external
+        view
+        returns (
+            uint256[] memory,
+            uint256[] memory,
+            PoolManager.StrategyExclusivity[] memory
+        )
+    {
+        (
+            uint256[] memory _strategyIds,
+            PoolManager.StrategyExclusivity[] memory _exclusivity
+        ) = poolManager.getStrategiesFromLayer(poolId, layerId);
+        uint256[] memory amounts = new uint256[](_strategyIds.length);
+        address staker = vault.getStakerFromId(stakeId);
+
+        for (uint256 i = 0; i < _strategyIds.length; ++i) {
+            uint256 strategyId = _strategyIds[i];
+            (amounts[i]) = _calculateReward(
+                staker,
+                stakeId,
+                poolId,
+                strategyId,
+                payload
+            );
+        }
+        return (_strategyIds, amounts, _exclusivity);
+    }
+
+    // ===================================================================
+    //                      Internal Functions
+    // ===================================================================
+
+    function _validateAndGetData(
+        bytes32 stakeId,
+        uint256 poolId,
+        uint256 strategyId
+    )
+        internal
+        view
+        returns (address staker, address strategyAddress, uint256 layerId)
+    {
+        staker = vault.getStakerFromId(stakeId);
+        require(
+            staker == _msgSender(),
+            RewardErrors.NotStakeOwner(_msgSender(), staker)
+        );
+
+        strategyAddress = strategiesRegistry.getStrategyAddress(strategyId);
+        require(
+            strategyAddress != address(0),
+            RewardErrors.StrategyNotExist(strategyId)
+        );
+
+        layerId = poolManager.getStrategyLayer(poolId, strategyId);
+        _validateExclusivity(staker, poolId, layerId, strategyId);
+
+        IRewardStrategy.StrategyType strategyType = IRewardStrategy(
+            strategyAddress
+        ).getStrategyType();
+
+        if (strategyType == IRewardStrategy.StrategyType.POOL_SIZE_DEPENDENT) {
+            require(
+                poolManager.isPoolCalculated(poolId),
+                RewardErrors.PoolNotInitializedOrCalculated(poolId)
+            );
+        } else {
+            require(
+                poolManager.hasStarted(poolId),
+                RewardErrors.PoolNotStarted(poolId)
+            );
+        }
+    }
+
+    function _validateExclusivity(
+        address staker,
+        uint256 poolId,
+        uint256 layerId,
+        uint256 strategyId
+    ) internal view {
+        PoolManager.StrategyExclusivity strategyType = poolManager
+            .getStrategyExclusivity(poolId, layerId, strategyId);
+        ClaimsJournal.LayerClaimType layerClaimState = claimsJournal
+            .getLayerClaimState(staker, poolId, layerId);
+
+        if (strategyType == PoolManager.StrategyExclusivity.EXCLUSIVE) {
+            require(
+                layerClaimState == ClaimsJournal.LayerClaimType.NORMAL,
+                RewardErrors.LayerAlreadyHasClaim(layerId, _getCurrentDay())
+            );
+        } else {
+            require(
+                layerClaimState != ClaimsJournal.LayerClaimType.EXCLUSIVE,
+                RewardErrors.LayerAlreadyHasExclusiveClaim(
+                    layerId,
+                    _getCurrentDay()
+                )
+            );
+            if (
+                strategyType == PoolManager.StrategyExclusivity.SEMI_EXCLUSIVE
+            ) {
+                require(
+                    layerClaimState !=
+                        ClaimsJournal.LayerClaimType.SEMI_EXCLUSIVE,
+                    RewardErrors.LayerAlreadyHasSemiExclusiveClaim(
+                        layerId,
+                        _getCurrentDay()
+                    )
+                );
+            }
+        }
+    }
+
+    function _calculateReward(
+        address staker,
+        bytes32 stakeId,
+        uint256 poolId,
+        uint256 strategyId,
+        bytes calldata payload
+    ) internal view returns (uint256 estimatedAmount) {
+        IRewardStrategyV2 strategyContract = IRewardStrategyV2(
+            strategiesRegistry.getStrategyAddress(strategyId)
+        );
+
+        IRewardStrategyV2.CalculationData
+            memory calculationData = _packCalculationData(
+                staker,
+                stakeId,
+                poolId,
+                strategyId
+            );
+
+        estimatedAmount = strategyContract.calculateReward(
+            calculationData,
+            payload
+        );
+    }
+
+    function _packCalculationData(
+        address staker,
+        bytes32 stakeId,
+        uint256 poolId,
+        uint256 strategyId
+    ) internal view returns (IRewardStrategyV2.CalculationData memory) {
+        IStakingStorage.Stake memory stake = vault.getStake(stakeId);
+        PoolManager.Pool memory pool = poolManager.getPool(poolId);
+
+        uint16 lastClaimDay = claimsJournal.getLastClaimDay( // TODO: what about days granularity for the POOL_SIZE_INDEPENDENT strategy?
+            stakeId,
+            poolId,
+            strategyId
+        );
+
+        IRewardStrategyV2.PoolData memory poolData = IRewardStrategyV2
+            .PoolData({
+                weight: pool.totalPoolWeight > 0
+                    ? pool.totalPoolWeight
+                    : poolManager.poolLiveWeight(poolId),
+                reward: rewardAssignedToPool[poolId][strategyId],
+                startDay: pool.startDay,
+                endDay: pool.endDay
+            });
+
+        return
+            IRewardStrategyV2.CalculationData({
+                staker: staker,
+                stake: stake,
+                pool: poolData,
+                lastClaimDay: lastClaimDay
+            });
+    }
+
+    function _payout(
+        address staker,
+        uint256 strategyId,
+        address strategyAddress,
+        uint256 rewardAmount
+    ) internal {
+        _decreaseStrategyBalance(strategyId, rewardAmount);
+
+        address rewardToken = IRewardStrategy(strategyAddress).getRewardToken();
+        IERC20(rewardToken).safeTransfer(staker, rewardAmount);
+    }
+
+    function _recordClaim(
+        address staker,
+        uint256 poolId,
+        uint256 strategyId,
+        uint256 layerId,
+        bytes32 stakeId
+    ) internal {
+        PoolManager.StrategyExclusivity strategyType = poolManager
+            .getStrategyExclusivity(poolId, layerId, strategyId);
+
+        ClaimsJournal.LayerClaimType claimType;
+        if (strategyType == PoolManager.StrategyExclusivity.NORMAL) {
+            claimType = ClaimsJournal.LayerClaimType.NORMAL;
+        } else if (
+            strategyType == PoolManager.StrategyExclusivity.SEMI_EXCLUSIVE
+        ) {
+            claimType = ClaimsJournal.LayerClaimType.SEMI_EXCLUSIVE;
+        } else {
+            claimType = ClaimsJournal.LayerClaimType.EXCLUSIVE;
+        }
+
+        claimsJournal.recordClaim(
+            staker,
+            poolId,
+            layerId,
+            strategyId,
+            stakeId,
+            claimType,
+            _getCurrentDay()
+        );
+    }
+
+    function _getCurrentDay() internal view returns (uint16) {
+        return uint16(block.timestamp / 1 days);
+    }
+}

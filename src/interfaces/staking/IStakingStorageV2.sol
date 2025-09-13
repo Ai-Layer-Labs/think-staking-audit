@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: MIT
 
+import "./IStakingStorage.sol"; // For Stake struct definition
+
 pragma solidity ^0.8.30;
 
 /**
- * @title IStakingStorage Interface
+ * @title IStakingStorageV2 Interface
  * @notice Unified interface for consolidated staking storage
  */
-interface IStakingStorage {
+interface IStakingStorageV2 {
     enum Sign {
         POSITIVE,
         NEGATIVE
     }
+
     struct Stake {
         uint128 amount;
         uint16 stakeDay;
@@ -21,47 +24,31 @@ interface IStakingStorage {
 
     struct StakerInfo {
         uint128 totalStaked;
-        uint16 stakesCounter;
-        uint16 activeStakesNumber;
+        uint32 stakesCounter;
+        uint32 activeStakesNumber;
         uint16 lastCheckpointDay;
     }
 
     struct DailySnapshot {
         uint128 totalStakedAmount;
-        uint16 totalStakesCount;
+        uint32 totalStakesCount;
     }
-
-    // Events
-    event Staked(
-        address indexed staker,
-        bytes32 indexed stakeId,
-        uint128 amount,
-        uint16 indexed stakeDay,
-        uint16 daysLock,
-        uint16 flags
-    );
-
-    event Unstaked(
-        address indexed staker,
-        bytes32 indexed stakeId,
-        uint16 indexed unstakeDay,
-        uint128 amount
-    );
 
     event CheckpointCreated(
         address indexed staker,
         uint16 indexed day,
         uint128 balance,
-        uint16 stakesCount
+        uint32 stakesCount
     );
 
     // Stake Management
     function createStake(
+        bytes32 stakeId,
         address staker,
         uint128 amount,
         uint16 daysLock,
         uint16 flags
-    ) external returns (bytes32 stakeId);
+    ) external;
 
     function removeStake(address staker, bytes32 stakeId) external;
 

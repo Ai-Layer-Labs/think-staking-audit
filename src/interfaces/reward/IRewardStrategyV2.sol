@@ -3,10 +3,24 @@ pragma solidity ^0.8.30;
 
 import {IStakingStorage} from "../staking/IStakingStorage.sol";
 
-interface IRewardStrategy {
+interface IRewardStrategyV2 {
     enum StrategyType {
         POOL_SIZE_INDEPENDENT, // Can calculate anytime (APR-style)
         POOL_SIZE_DEPENDENT // Requires BE calculation after pool ends - how much were staked during the pool
+    }
+
+    struct PoolData {
+        uint256 weight;
+        uint256 reward;
+        uint16 startDay;
+        uint16 endDay;
+    }
+
+    struct CalculationData {
+        address staker;
+        IStakingStorage.Stake stake;
+        PoolData pool;
+        uint16 lastClaimDay;
     }
 
     // --- CONFIGURATION VIEW FUNCTIONS ---
@@ -21,12 +35,7 @@ interface IRewardStrategy {
      * @notice Calculates reward for POOL_SIZE_DEPENDENT strategies.
      */
     function calculateReward(
-        address user,
-        IStakingStorage.Stake calldata stake,
-        uint256 totalPoolWeight,
-        uint256 totalRewardAmount,
-        uint16 poolStartDay,
-        uint16 poolEndDay,
-        uint16 lastClaimDay
+        CalculationData calldata calculationData,
+        bytes calldata payload
     ) external view returns (uint256);
 }
