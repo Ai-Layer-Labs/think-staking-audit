@@ -12,10 +12,22 @@ interface IRewardStrategy {
     // --- CONFIGURATION VIEW FUNCTIONS ---
 
     function getName() external view returns (string memory);
-
     function getRewardToken() external view returns (address);
-
+    function getRewardLayer() external view returns (uint8);
     function getStrategyType() external view returns (StrategyType);
+
+    // --- CORE LOGIC ---
+
+    /**
+     * @notice Calculates reward for POOL_SIZE_INDEPENDENT strategies.
+     */
+    function calculateReward(
+        address user,
+        IStakingStorage.Stake calldata stake,
+        uint16 poolStartDay,
+        uint16 poolEndDay,
+        uint16 lastClaimDay
+    ) external view returns (uint256);
 
     /**
      * @notice Calculates reward for POOL_SIZE_DEPENDENT strategies.
@@ -26,7 +38,6 @@ interface IRewardStrategy {
         uint256 totalPoolWeight,
         uint256 totalRewardAmount,
         uint16 poolStartDay,
-        uint16 poolEndDay,
-        uint16 lastClaimDay
+        uint16 poolEndDay
     ) external view returns (uint256);
 }
